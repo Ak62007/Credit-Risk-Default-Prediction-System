@@ -10,3 +10,12 @@ This dataset contains the full LendingClub data available from their site. There
 
 #### Known Issues / Caveats
 Some columns likely contain post-default information (e.g. payments made, recoveries) that would not be available at loan origination time. These must be identified and excluded during feature engineering to prevent leakage.
+
+### day-2
+Started doing some EDA(on the accepted loans):
+- data has 151 columns and 2260701 rows
+- I checked the loan status column which just tells the current status of the loans, This will be our label.
+- This columns takes multiple values. I made some decisions while label creation. Those are as followings:
+    1. 'Current', 'In Grace Period', 'Late (16-30 days)' has been dropped.
+    2. 'Fully Paid' and 'Does not meet the credit policy. Status:Fully Paid' are set to 0 else are 1.
+    3. Class Distribution: 0 -> 78.765025 %, 1 -> 21.234975 %
