@@ -172,3 +172,33 @@ All `num_*`, `mo_sin_*`, `mths_since_*`, `open_*`, `bc_*`, `il_*` columns — th
 
 ---
 *This document should be updated after each major EDA finding.*
+
+# day-5
+
+## Data leakage decisions
+So, I have decided to keep these columns:
+`annual_inc`, `emp_length`, `emp_title`, `home_ownership`, `addr_state`, `zip_code`, `verification_status`, `application_type`, 
+`loan_amnt`, `term`, `purpose`, `title`, `desc`, `fico_range_high`, `fico_range_low`, `earliest_cr_line`, `open_acc`, `pub_rec`, `revol_bal`, `revol_util`, `total_acc`, `dti`, `delinq_2yrs`, `inq_last_6mths`, `mths_since_last_delinq`, `mths_since_last_record`, `collections_12_mths_ex_med`, `pub_rec_bankruptcies`, `tax_liens`, `chargeoff_within_12_mths`,`num_*`, `mo_sin_*`, `mths_since_*`, `open_*`, `bc_*`, `il_*`, `annual_inc_joint`, `dti_joint`, `verification_status_joint`, `sec_app_*`,`issue_d`
+
+I am also including:
+`int_rate` - even though this has very high correlation with grade, sub-grade(which was the technique used by LC to grade a customer and according to this grade and sub-grade they decided the int rate.), My analony says we shouldn't keep this column for modelling since it has such a high correlation with grade and sub-grade columns, because i think it some how leaks the target through some backdoor effect, But since i am curious to test this analony, I have planned to train the model with and without this feature and check it's effect.
+
+`funded_amnt` - don't have much corr with loan_amnt hence kept, removed `funded_amnt_inv` since it has huge corr with `funded_amnt`.
+
+`acc_now_delinq` and `delinq_amnt` is kept for further analysis while modelling.
+
+## Recency Bais decisions
+So, I grouped the data by issue date and calulated the default_rate for each date and the, Results were very interesting, You can check out the plot in the `reports/figure/default_rate_over_time.png` file.
+
+Here is a bit of analysis:
+- 2007-2008 high defaults — this was the 2008 financial crisis. The worst economic collapse since the Great Depression. Unemployment spiked, people lost homes, couldn't pay debts. The entire economy collapsed. LendingClub was also very new in 2007 with very few loans, so small sample size amplifies the rate.
+
+- 2009-2014 stabilization — economy recovered, AND LendingClub tightened credit policy significantly after the crisis.
+
+- 2015-2017 rise — LendingClub aggressively expanded, issuing far more loans to riskier borrowers to grow the business. Volume over quality.
+
+- Sharp drop at end of 2018 — Those loans were issued in late 2018 and haven't had enough time to default yet. A loan issued in December 2018 might default in 2020 — but this dataset only goes to 2018. So recent loans look artificially clean. This is called survival bias or right-censoring.
+
+Based on these observation, I have decided to make following splits:
+- 2007-2014 train, 2015 val, 2016-2017 test
+- I have also decided to use the 2018 data but later, There are techniques to resolve this survival bias problem. will apply it later.
