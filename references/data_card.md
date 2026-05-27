@@ -39,7 +39,7 @@ Started doing some EDA(on the accepted loans):
 | `In Grace Period` | **DROPPED** | Outcome uncertain — just missed one payment |
 | `Late (16-30 days)` | **DROPPED** | Outcome uncertain — too early to classify |
 
-> ⚠️ **Decision Note:** `Late (31-120 days)` is labeled as 1 (default). This assumes serious delinquency leads to charge-off. Some of these loans may eventually be repaid — this is an acknowledged simplification.
+> **Decision Note:** `Late (31-120 days)` is labeled as 1 (default). This assumes serious delinquency leads to charge-off. Some of these loans may eventually be repaid — this is an acknowledged simplification.
 
 ### Class Distribution (after filtering)
 
@@ -48,7 +48,7 @@ Started doing some EDA(on the accepted loans):
 | 0 — Good Loan | ~1,072,000 | ~79% |
 | 1 — Default | ~284,000 | ~21% |
 
-> ⚠️ **Moderate class imbalance.** The dataset has roughly a 4:1 ratio of good loans to defaults. This must be addressed during modeling using class weights, oversampling, or threshold tuning.
+> **Moderate class imbalance.** The dataset has roughly a 4:1 ratio of good loans to defaults. This must be addressed during modeling using class weights, oversampling, or threshold tuning.
 
 ---
 
@@ -202,3 +202,18 @@ Here is a bit of analysis:
 Based on these observation, I have decided to make following splits:
 - 2007-2014 train, 2015 val, 2016-2017 test
 - I have also decided to use the 2018 data but later, There are techniques to resolve this survival bias problem. will apply it later.
+
+# day-6
+Categorical features analysis of the relevant features:
+Key EDA Findings — Categorical Features:
+- term — 60 month loans default at 2x the rate of 36 month loans (34% vs 17%). Strong predictor.
+- emp_length — weak signal. Default rates barely differ across employment lengths (20-22% range). Likely low importance feature.
+- home_ownership — mortgage holders default least (18%), renters most (24%). Moderate signal.
+- verification_status — counterintuitive. Verified borrowers default more (25%) than unverified (16%). LendingClub verified riskier - applicants more carefully.
+- purpose — strong signal. Small business (31%) vs wedding (12%). 19 percentage point spread.
+- application_type — joint applications default more (30%) than individual (21%). Counterintuitive.
+- disbursement_method — DirectPay defaults more (26%) than Cash (21%). Minor signal.
+- addr_state — Mississippi highest (28%), DC lowest (14%). Geographic signal exists but spread is moderate.
+- pymnt_plan — drop. Pure leakage.
+- emp_title, title — too many unique values. Need text processing or grouping during feature engineering.
+- earliest_cr_line — needs conversion to credit age in years during feature engineering.
