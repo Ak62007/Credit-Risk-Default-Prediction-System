@@ -217,3 +217,106 @@ Key EDA Findings — Categorical Features:
 - pymnt_plan — drop. Pure leakage.
 - emp_title, title — too many unique values. Need text processing or grouping during feature engineering.
 - earliest_cr_line — needs conversion to credit age in years during feature engineering.
+
+# day-7
+
+## What changed and why
+
+Spent today rebuilding the label and the temporal split from scratch. The earlier approach — drop `Current`/`In Grace Period`/`Late (16-30 days)` and label everything else — turns out to have introduced a serious bias that I missed in days 2–5. This entry documents what was wrong, the fix, and the empirical evidence the fix worked.
+
+## The bug: censoring bias from dropping `Current`
+
+The original logic dropped `Current` loans because their outcome was "unknown." On the surface this seemed conservative — don't label what you can't observe. The problem: whether a loan is in `Current` status is **not random**. It is highly correlated with the outcome we're trying to predict.
+
+Concretely: a 60-month loan issued in mid-2017, observed at the Dec 2018 snapshot, has only had ~18 months to either default or pay off. Loans that default tend to default early (most defaults happen by month 18-24). Loans that are good are still dutifully paying — meaning they're in `Current` status at snapshot time.
+
+When I dropped `Current`, I wasn't dropping a random slice. I was dropping the *good loans disproportionately*. The survivors of my filter — the loans that had already resolved by Dec 2018 — were over-representative of fast resolvers, and fast resolution is itself a signal of default. The result: a dataset that looked like recent loans defaulted at extreme rates (close to 30%+ for 60-month 2017 loans), when in reality much of that "default rate" was an artifact of which rows survived the filter.
+
+This is **censoring bias** — when the probability of being in your dataset is correlated with the outcome you're trying to predict, because the snapshot was taken before the world fully revealed itself.
+
+## The fix: observation-window labeling
+
+Instead of filtering by outcome status, filter by **observation time**.
+
+Rule:
+1. `snapshot_date` = max(`issue_d`) in raw data ≈ Dec 2018.
+2. Define an observation window `W` in months.
+3. Include a loan iff `(snapshot_date − issue_d) ≥ W months`.
+4. On included loans, label:
+   - `Charged Off`, `Default`, `Does not meet... Charged Off`, `Late (31-120 days)` → 1
+   - `Fully Paid`, `Does not meet... Fully Paid`, **`Current`** → 0
+   - `In Grace Period`, `Late (16-30 days)` → drop (genuinely ambiguous, tiny row count)
+
+The critical change is that `Current` loans which survived W months without going bad are now labeled 0 (good). The selection criterion now depends only on `issue_d` and the calendar — both independent of outcome — so the bias is removed.
+
+The cost: some loans labeled 0 will eventually default after month W (slow defaulters). This is bounded **label noise** in exchange for eliminating uncontrolled **selection bias**. Noise the model can handle; bias it cannot.
+
+## Choosing W
+
+W was selected empirically. For each `Charged Off` loan, computed `months_to_default = last_pymnt_d − issue_d` (note: `last_pymnt_d` is a leakage column never used as a feature — only used here for offline label-quality analysis).
+
+Cumulative distribution of months-to-default:
+- By month 12: ~25% of defaults captured
+- By month 18: ~50%
+- By month 24: ~80%
+- By month 30: ~90%
+- By month 36: ~95%
+- Asymptote around month 50
+
+**Chosen W = 24 months.** This captures ~80% of all defaults, leaves ~20% of eventual defaulters mislabeled as good (the slow defaulters), and — critically — leaves all of 2016 available as a test set.
+
+Alternative considered: W = 30 (~90% capture) would have shrunk the test set to only H1 2016, weakening the temporal-generalization story. The trade was: 10 extra percentage points of label fidelity vs. 6 more months of test data. I prioritized test-set range because the whole point of the temporal split is measuring how well the model handles a meaningfully different time period from training. A test set of half a year of 2016 doesn't tell you that story as well as a full year does.
+
+Caveat: `last_pymnt_d` approximates the charge-off moment but isn't exact (LendingClub officially declares charge-off ~150 days after last payment). The chosen W is robust to this — even if the true timing curve is shifted by ~5 months, W=24 still captures the bulk of defaults.
+
+## Revised temporal split
+
+Old (incorrect) split:
+- Train: 2007–2014
+- Val: 2015
+- Test: 2016–2017
+
+New split under W = 24:
+- Train: 2007–2014
+- Val: 2015
+- Test: 2016 (full year)
+- Filtered out: 2017 and 2018 (issued too recently to have cleared W)
+
+The split ceiling is Dec 2016 — anything issued later fails the W = 24 observation-window filter and is excluded from all splits.
+
+## New class distribution
+
+Old regime (drop `Current`): 79% good / 21% default, ~1.35M rows.
+New regime (W = 24): 82.80 % good / 17.19 % default, 1316800 rows.
+
+The default rate dropped, as expected, because formerly-deleted `Current` good loans are now correctly counted as label 0.
+
+## Empirical evidence the fix worked
+
+Two checks were run.
+
+**Check 1: Default rate over time (Figure: reports/figures/new_regime.png)**
+
+Comparison of monthly default rate, old regime vs new regime:
+- 2007–2014: both regimes produce nearly identical curves. As theory predicts — old loans had time to resolve naturally, so dropping `Current` and using W = 24 converge.
+- 2015–2016: old regime showed a dramatic spike to ~28%; new regime stays stable around 17–19%.
+- Sharp end-of-period cliff in old regime is gone in new regime (because the filter now correctly excludes too-young loans rather than including them with garbage labels).
+
+## Updated interpretation of earlier findings
+
+Day-5 noted a "rise" in default rates from 2015–2017, interpreted as LendingClub aggressively expanding to riskier borrowers (volume over quality). After the fix, most of this apparent rise disappears. There is still a *mild* upward drift in 2014–2016 (~17% → ~19%), so the underwriting-loosening narrative isn't entirely wrong — but it was significantly inflated by censoring artifacts. The corrected picture is: gentle drift, not dramatic deterioration.
+
+This is a useful reminder: any "trend" in a temporally-snapshotted dataset where the recent end is censored should be treated with suspicion until verified under a proper observation-window filter.
+
+## Things still to address (future work)
+
+- A survival analysis (Cox proportional hazards) could in principle correct the residual ~20% label noise rather than just bound it. Noted as future work; not pursued for this version.
+- 2017–2018 data is currently discarded entirely. With more time, a separate experiment could re-incorporate it under a shorter observation window for an additional test set, accepting higher noise as the cost.
+- The exact ~150-day gap between last payment and official charge-off declaration was not modeled here. For a more rigorous timing analysis, this offset should be subtracted.
+
+## Updated data card sections that this entry supersedes
+
+- Section 2 (Temporal Split Strategy) of the day-4 entry is now outdated. The new split is Train 2007–2014 / Val 2015 / Test 2016, with 2017–2018 excluded.
+- The label-mapping table in Section 1 should now treat `Current` as label 0 (provided it cleared W = 24), not as `DROPPED`.
+- The default-rate-over-time analysis in day-5 (and the interpretation about LC expansion-era underwriting) is now substantially revised — see "Updated interpretation of earlier findings" above.
+
