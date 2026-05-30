@@ -1,3 +1,4 @@
+import json
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -15,6 +16,7 @@ app = typer.Typer()
 # Defining some constants
 W = 24
 RAW_DATA_PATH = RAW_DATA_DIR / "accepted_2007_to_2018q4.csv"
+AFTER_EDA = PROCESSED_DATA_DIR / "after_eda"
 STATUS_TO_LABEL = {
     'Fully Paid':                                           0,                                           
     'Current':                                              0,
@@ -31,6 +33,10 @@ SPLIT_YEARS = {
     'val':      (2015, 2015),
     'test':     (2016, 2016),
 }
+TRAIN_FILENAME = "training_set.parquet"
+VAL_FILENAME = "val_set.parquet"
+TEST_FILENAME = "test_set.parquet"
+METADATA_FILENAME = "metadata.json"
 
 # functions
 def load_data(path: Path) -> pd.DataFrame:
@@ -42,7 +48,7 @@ def load_data(path: Path) -> pd.DataFrame:
         thousands=',',
         na_values=['NA', 'N/A', 'null', 'NULL', '', ' ', 'None'],
         low_memory=False,
-        nrows=1000
+        # nrows=1000
     )
     
     # doing a bit cleaning and dtype correction
@@ -94,8 +100,10 @@ def build_target(data: pd.DataFrame) -> pd.DataFrame:
     logger.info("Building the target...")
     logger.info(f"Input: Got {len(data)} rows and {data.shape[1]} columns")
     
+    data = data.copy()
+    
     drop_vals = [key for key, value in STATUS_TO_LABEL.items() if value is None]
-    ones_vals = [key for key, value in STATUS_TO_LABEL.items() if value is 1]
+    ones_vals = [key for key, value in STATUS_TO_LABEL.items() if value == 1]
     
     drop_mask = data['loan_status'].isin(drop_vals)
     data = data[~drop_mask]
@@ -123,31 +131,80 @@ def make_splits(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Data
     val_set = data[val_mask]
     test_set = data[test_mask]
     
-    logger.info(f"Splited the data: Training data shape: {training_set.shape} with default rate: {(training_set['target'].sum()/len(training_set))*100}%, Val data shape: {val_set.shape} with default rate: {(training_set['target'].sum()/len(training_set))*100}%, Testing data shape: {test_set.shape} with default rate: {(training_set['target'].sum()/len(training_set))*100}%")
+    logger.info(f"Splited the data: Training data shape: {training_set.shape} with default rate: {(training_set['target'].sum()/len(training_set))*100:.2f}%, Val data shape: {val_set.shape} with default rate: {(val_set['target'].sum()/len(val_set))*100:.2f}%, Testing data shape: {test_set.shape} with default rate: {(test_set['target'].sum()/len(test_set))*100:.2f}%")
 
     return (training_set, val_set, test_set)
 
 def build_dataset(
     raw_path: Path = RAW_DATA_PATH,
-    processed_dir: Path = PROCESSED_DATA_DIR,
+    processed_dir: Path = AFTER_EDA,
     W: int = W,
     force_rebuild: bool = False
 ) -> None:
     logger.info("Checking the permission to Build the complete dataset...")
     
-    is_empty = not any(processed_dir.iterdir())
-    if not is_empty and not force_rebuild:
+    expected_files = [processed_dir / name for name in [TRAIN_FILENAME, VAL_FILENAME, TEST_FILENAME, METADATA_FILENAME]]
+    cache_complete = all(f.exists() for f in expected_files)
+    if cache_complete and not force_rebuild:
         logger.info(f"Skipping the build, data already exists inside {processed_dir}")
     else:
+        logger.info("Got the permissions!, Building the dataset...")
         df = load_data(path=raw_path)
         ss_date = compute_snapshot_date(data=df)
         df = apply_observation_window(data=df, ss_date=ss_date, W=W)
         df = build_target(data=df)
-        splits = make_splits(data=df)
+        train_df, val_df, test_df = make_splits(data=df)
         
-        splits[0].to_parquet(path=processed_dir / "training_set.parquet")
-        splits[1].to_parquet(path=processed_dir / "val_set.parquet")
-        splits[2].to_parquet(path=processed_dir / "test_set.parquet")
+        train_df.to_parquet(path=processed_dir / TRAIN_FILENAME)
+        val_df.to_parquet(path=processed_dir / VAL_FILENAME)
+        test_df.to_parquet(path=processed_dir / TEST_FILENAME)
+        
+        # building metadata
+        metadata = {
+            "W": W,
+            "snapshot_date": ss_date.isoformat(),
+            "target_imputation": STATUS_TO_LABEL,
+            "split_years": SPLIT_YEARS,
+            "row_counts": {
+                "train": len(train_df),
+                "val": len(val_df),
+                "test": len(test_df),
+            },
+            "default_rates": {
+                "train": float(train_df['target'].mean()),
+                "val": float(val_df['target'].mean()),
+                "test": float(test_df['target'].mean()),
+            },
+            "built_at": pd.Timestamp.now().isoformat(),
+        }
+        
+        with open(processed_dir / METADATA_FILENAME, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        assert (processed_dir / TRAIN_FILENAME).exists(), ("training_set not created successfully!, File not present")
+        assert (processed_dir / VAL_FILENAME).exists(), ("val_set not created successfully!, File not present")
+        assert (processed_dir / TEST_FILENAME).exists(), ("test_set not created successfully!, File not present")
+        assert (processed_dir / METADATA_FILENAME).exists(), ("metadata not created sucessfully!, File not present")
+        
+        logger.info("successfully created all three datasets and the metadata!")
+        
+def load_splits(path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    files = [path / name for name in [TRAIN_FILENAME, VAL_FILENAME, TEST_FILENAME, METADATA_FILENAME]]
+    files_exits = any(f.exists() for f in files)
+    logger.info("Checking if the files exists...")    
+    if files_exits:
+        logger.info("Loading the Cached files...")
+        train_df = pd.read_parquet(files[0])
+        val_df = pd.read_parquet(files[1])
+        test_df = pd.read_parquet(files[2])
+        
+        with open(files[3], 'r') as f:
+            metadata = json.load(f)
+            
+        logger.info(f"Loaded sucessfully all the splits and the metadata, Train_df shape: {train_df.shape}, val_df shape: {val_df.shape}, test_df shape: {test_df.shape}")
+        return (train_df, val_df, test_df, metadata)
+    else:
+        raise FileNotFoundError(f"One of the splits or the metadata file not found, Please check {path}")
         
 
 
@@ -155,10 +212,11 @@ def build_dataset(
 def main(
     # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
     input_path: Path = RAW_DATA_PATH,
-    output_path: Path = PROCESSED_DATA_DIR,
+    output_path: Path = AFTER_EDA,
     # ----------------------------------------------
 ):
-    pass
+    # build_dataset(raw_path=input_path, processed_dir=output_path, W=W)
+    splits = load_splits(path=output_path)
 
 
 if __name__ == "__main__":
