@@ -118,6 +118,8 @@ Future milestones will extend this with feature engineering (`features.py`), mod
 ---
 
 ## Project organization
+
+```
 ├── LICENSE
 ├── Makefile
 ├── README.md
@@ -137,15 +139,16 @@ Future milestones will extend this with feature engineering (`features.py`), mod
 ├── setup.cfg
 │
 └── credit_risk        <- Source code
-├── init.py
-├── config.py      <- Constants and paths
-├── dataset.py     <- Data loading, observation-window filter, labeling, splits
-├── features.py    <- (upcoming, Milestone 5)
-├── modeling
-│   ├── init.py
-│   ├── predict.py <- (upcoming)
-│   └── train.py   <- (upcoming)
-└── plots.py
+    ├── __init__.py
+    ├── config.py      <- Constants and paths
+    ├── dataset.py     <- Data loading, observation-window filter, labeling, splits
+    ├── features.py    <- (upcoming, Milestone 5)
+    ├── modeling
+    │   ├── __init__.py
+    │   ├── predict.py <- (upcoming)
+    │   └── train.py   <- (upcoming)
+    └── plots.py
+```
 
 ---
 
