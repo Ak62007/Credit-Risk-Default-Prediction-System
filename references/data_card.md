@@ -320,3 +320,145 @@ This is a useful reminder: any "trend" in a temporally-snapshotted dataset where
 - The label-mapping table in Section 1 should now treat `Current` as label 0 (provided it cleared W = 24), not as `DROPPED`.
 - The default-rate-over-time analysis in day-5 (and the interpretation about LC expansion-era underwriting) is now substantially revised — see "Updated interpretation of earlier findings" above.
 
+# day-8
+
+## What changed and why
+
+Spent today building Tier 1 data validation tests (pytest schema suite). The
+process surfaced three findings about the data that hadn't been fully
+internalized in earlier EDA. This entry documents them along with the
+methodology choices behind the test suite itself.
+
+## Finding 1: `application_type` is effectively constant in our splits
+
+The day-6 EDA noted: *"application_type — joint applications default more
+(30%) than individual (21%)."* That finding was computed on the full raw
+data (2007-2018). After the W=24 observation-window filter and the
+2007-2016 split boundaries, the picture changes substantially:
+
+| Split | Individual apps | Joint apps  |
+|-------|-----------------|-------------|
+| Train | 466,071         | 0           |
+| Val   | 419,694         | 510         |
+| Test  | 423,032         | 8,680       |
+
+LendingClub launched the joint-application product in 2015. Our train set
+(2007-2014) predates that launch entirely, so it contains zero joint apps.
+Val (2015) has 510 (~0.1% of rows). Test (2016) has 8,680 (~2%).
+
+**Consequence:** `application_type` is *constant* in train and *near-constant*
+in val/test. A model trained on train cannot learn anything from it, and
+any joint-app-specific behavior cannot be modeled with train data alone.
+The day-6 finding does not transfer to our modeling data.
+
+**Lesson:** EDA findings on raw data don't automatically apply to filtered
+training data. Re-validate findings against the actual modeling splits.
+
+## Finding 2: Three distinct mechanisms producing 100% null columns
+
+The empty-column validation test surfaced 30 columns that are 100% null
+in train. Investigation revealed three structurally different causes,
+which are documented in `tests/test_schema.py` as named buckets:
+
+**Bucket 1 — Secondary-applicant fields never populated (13 columns).**
+All `sec_app_*` fields plus `revol_bal_joint`. These are 100% null across
+all 1.3M rows in *every* split, even though joint applications exist in
+val and test. LendingClub captures secondary-borrower data internally but
+does not expose it in the public CSV dump, likely for privacy reasons.
+This is a property of the data publication policy, not a sampling
+accident. The columns are retained in `dataset.py` rather than dropped
+because:
+1. The emptiness is a property of *this snapshot*, not a logical
+   exclusion. A future LendingClub release with a different redaction
+   policy could populate them.
+2. `dataset.py` should encode invariants of the problem (leakage,
+   identifiers, target source), not properties of the current data.
+3. The columns will be dropped in `features.py` for the current
+   modeling cycle.
+
+**Bucket 2 — Joint-aggregate fields, null in train only (3 columns).**
+`annual_inc_joint`, `dti_joint`, `verification_status_joint`. These are
+the *joint* (combined-borrower) versions of standard fields. They are
+populated for the joint-app rows in val and test but 100% null in train
+because the joint-app product didn't exist pre-2015.
+
+**Bucket 3 — Installment-tracker block, null in train only (14 columns).**
+`open_acc_6m`, `open_act_il`, `il_util`, etc. LendingClub started
+capturing these data points around 2015, so pre-2015 train data has them
+as 100% null even for individual loans. This is a *data-collection*
+change, distinct from Bucket 2's *product* change.
+
+Buckets 2 and 3 look similar (null in train, populated in val/test) but
+the underlying mechanisms differ. Bucket 2 is null because the feature
+doesn't apply pre-2015; Bucket 3 is null because LC didn't record it
+pre-2015 even when it would have applied.
+
+## Finding 3: Refining the day-4 missingness numbers
+
+Day-4 estimated `sec_app_*` columns as "~98% null." The actual figure on
+the filtered modeling data is **100% null** in every split. The 98% came
+from a quick scan of raw data that included rows we now exclude. Updated
+estimates for the empty-column groups, on the modeling splits:
+
+| Group | day-4 estimate | actual |
+|-------|----------------|--------|
+| `sec_app_*` | ~98% null | 100% null (all splits) |
+| Installment tracker (`il_util` etc.) | ~60% null | 100% null in train |
+| Joint aggregate (`annual_inc_joint` etc.) | (not flagged separately) | 100% null in train |
+
+The day-4 missingness work was directionally correct but should not be
+taken as quantitatively precise on the modeling splits. The exact
+percentages and the per-split breakdown are now documented in
+`tests/test_schema.py::ALLOWED_FULLY_NULL`.
+
+## On the test suite architecture
+
+The Tier 1 schema suite (`tests/test_schema.py`) contains 17 parametrized
+checks covering: required columns present, expected logical dtypes, no
+nulls in critical columns (`issue_d`, `target`), target is binary, row
+counts match `metadata.json`, no leakage columns present, no
+unexpectedly-empty columns.
+
+Two design choices worth noting:
+
+- **Logical dtypes over exact dtypes.** Initial tests used exact dtype
+  strings ("datetime64[ns]", "object") and failed because pyarrow
+  round-trip normalizes timestamps to microsecond precision and string
+  columns to a `string` dtype. The contract was rewritten to use
+  `pd.api.types.is_*_dtype` helpers, which check *kinds* (datetime, int,
+  float, string) rather than exact dtype strings. This is robust to
+  pandas/pyarrow version changes.
+
+- **Allowlist for documented sparsity.** The empty-column test exempts
+  the three buckets above so it fires only on *new* fully-null columns
+  (regression detection). The allowlist is in code, with comments tying
+  each entry back to a finding. New entries require a comment explaining
+  why.
+
+## Implications for `features.py` (Milestone 5)
+
+Captured here as a TODO so the decisions aren't forgotten:
+
+- The 13 Bucket-1 columns will be dropped — they are unpopulated and
+  cannot contribute signal in this snapshot.
+- The 3 Bucket-2 columns will likely be dropped, since a train-fit model
+  cannot use them. A possible alternative is to engineer an "is joint
+  app" indicator from `application_type`, but the small joint-app
+  fraction in val (0.1%) makes this marginal.
+- The 14 Bucket-3 columns are a harder call. Options:
+  (a) drop them outright;
+  (b) keep them and treat missingness as a feature using a "vintage
+      2015+" indicator;
+  (c) restrict training to 2014+ data only, losing temporal range but
+      gaining feature coverage.
+  The right answer depends on whether the installment-tracker signal is
+  strong enough to justify the loss of pre-2015 training data.
+
+## Updated sections that this entry supersedes
+
+- Day-4 missingness estimates (Section "Missingness Patterns") are now
+  superseded by the verified per-split numbers above. The day-4 entry
+  remains as the original observation; this entry has the corrections.
+- Day-6 finding on `application_type` ("joint apps default 30% vs 21%")
+  remains true for the *raw data* but does not apply to our modeling
+  splits. Day-6 is not edited; this caveat is the correction.
