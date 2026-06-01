@@ -17,6 +17,53 @@ app = typer.Typer()
 W = 24
 RAW_DATA_PATH = RAW_DATA_DIR / "accepted_2007_to_2018q4.csv"
 AFTER_EDA = PROCESSED_DATA_DIR / "after_eda"
+LEAKAGE_COLUMNS = [
+    'total_pymnt',
+    'total_pymnt_inv',
+    'total_rec_prncp',
+    'total_rec_int',
+    'total_rec_late_fee',
+    'recoveries',
+    'collection_recovery_fee',
+    'last_pymnt_d',
+    'last_pymnt_amnt',
+    'next_pymnt_d',
+    'out_prncp',
+    'out_prncp_inv',
+
+    'last_credit_pull_d',
+    'last_fico_range_high',
+    'last_fico_range_low',
+
+    'hardship_flag',
+    'hardship_type',
+    'hardship_reason',
+    'hardship_status',
+    'hardship_start_date',
+    'hardship_end_date',
+    'hardship_amount',
+    'hardship_length',
+    'hardship_dpd',
+    'hardship_loan_status',
+    'payment_plan_start_date',
+    'deferral_term',
+    'orig_projected_additional_accrued_interest',
+    'hardship_payoff_balance_amount',
+    'hardship_last_payment_amount',
+
+    'debt_settlement_flag',
+    'debt_settlement_flag_date',
+    'settlement_status',
+    'settlement_date',
+    'settlement_amount',
+    'settlement_percentage',
+    'settlement_term',
+
+    'id',
+    'member_id',
+    'url',
+    'pymnt_plan',
+]
 STATUS_TO_LABEL = {
     'Fully Paid':                                           0,                                           
     'Current':                                              0,
@@ -95,6 +142,21 @@ def apply_observation_window(
     
     return data.loc[filtered_idx]
 
+def drop_leakage_columns(data: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Dropping The Leakage Columns...")
+    logger.info(f"Input Got the data of shape: {data.shape}")
+    
+    before_cols = set(data.columns)
+    data = data.drop(columns=LEAKAGE_COLUMNS, errors='ignore')
+    after_cols = set(data.columns)
+    dropped = before_cols - after_cols
+    
+    logger.info(f"Dropped {len(dropped)} leakage columns: {sorted(dropped)}")
+    logger.info(f"Output dataframe of shape: {data.shape}")
+    
+    return data
+    
+
 def build_target(data: pd.DataFrame) -> pd.DataFrame:
     
     logger.info("Building the target...")
@@ -112,6 +174,8 @@ def build_target(data: pd.DataFrame) -> pd.DataFrame:
     target = np.where(ones_mask, 1, 0)
     
     data['target'] = target
+    logger.info("Dropping the 'loan_status' column.")
+    data = data.drop(columns=['loan_status'])
     
     assert 'target' in data.columns, "target column not added"
     assert set(data['target'].unique()) == {0,1}, "target is not set properly, has more values apart from {0,1}"
@@ -152,6 +216,7 @@ def build_dataset(
         df = load_data(path=raw_path)
         ss_date = compute_snapshot_date(data=df)
         df = apply_observation_window(data=df, ss_date=ss_date, W=W)
+        df = drop_leakage_columns(df)
         df = build_target(data=df)
         train_df, val_df, test_df = make_splits(data=df)
         
@@ -163,6 +228,7 @@ def build_dataset(
         metadata = {
             "W": W,
             "snapshot_date": ss_date.isoformat(),
+            "dropped_leakage_columns": LEAKAGE_COLUMNS,
             "target_imputation": STATUS_TO_LABEL,
             "split_years": SPLIT_YEARS,
             "row_counts": {
@@ -215,8 +281,8 @@ def main(
     output_path: Path = AFTER_EDA,
     # ----------------------------------------------
 ):
-    # build_dataset(raw_path=input_path, processed_dir=output_path, W=W)
-    splits = load_splits(path=output_path)
+    build_dataset(raw_path=input_path, processed_dir=output_path, W=W, force_rebuild=True)
+    # splits = load_splits(path=output_path)
 
 
 if __name__ == "__main__":
