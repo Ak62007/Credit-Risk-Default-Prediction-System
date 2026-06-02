@@ -1,4 +1,5 @@
 import json
+import pytest
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -218,6 +219,7 @@ def build_dataset(
         df = apply_observation_window(data=df, ss_date=ss_date, W=W)
         df = drop_leakage_columns(df)
         df = build_target(data=df)
+        no_of_rows_before_split = len(df)
         train_df, val_df, test_df = make_splits(data=df)
         
         train_df.to_parquet(path=processed_dir / TRAIN_FILENAME)
@@ -231,6 +233,7 @@ def build_dataset(
             "dropped_leakage_columns": LEAKAGE_COLUMNS,
             "target_imputation": STATUS_TO_LABEL,
             "split_years": SPLIT_YEARS,
+            "row_count_before_split": no_of_rows_before_split,
             "row_counts": {
                 "train": len(train_df),
                 "val": len(val_df),
@@ -275,14 +278,28 @@ def load_splits(path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, d
 
 
 @app.command()
-def main(
-    # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
+def build(
     input_path: Path = RAW_DATA_PATH,
     output_path: Path = AFTER_EDA,
-    # ----------------------------------------------
+    force_rebuild: bool = typer.Option(
+        False, "--force-rebuild", help="Skip cache and rebuild from scratch."
+    ),
 ):
-    build_dataset(raw_path=input_path, processed_dir=output_path, W=W, force_rebuild=True)
-    # splits = load_splits(path=output_path)
+    build_dataset(
+        raw_path=input_path,
+        processed_dir=output_path,
+        W=W,
+        force_rebuild=force_rebuild,
+    )
+    
+@app.command()
+def validate():
+    logger.info("Validating the pipeline...")
+    exit_code = int(pytest.main(['tests/', '-v']))
+    if not exit_code:
+        logger.info("All tests passed!")
+    else:
+        raise typer.Exit(code=exit_code)
 
 
 if __name__ == "__main__":
