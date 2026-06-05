@@ -100,7 +100,7 @@ def load_data(path: Path) -> pd.DataFrame:
     )
     
     # doing a bit cleaning and dtype correction
-    parse_dates = ['issue_d']
+    parse_dates = ['issue_d', 'earliest_cr_line']
     
     # correcting the dates format
     raw_data[parse_dates] = raw_data[parse_dates].apply(lambda x: pd.to_datetime(x, format="%b-%Y", errors='coerce'))
