@@ -32,6 +32,7 @@ dependencies = [
     "scikit-learn",
     "tqdm",
     "typer",
+    "xgboost>=3.2.0",
 ]
 requires-python = "~=3.11.0"
 
