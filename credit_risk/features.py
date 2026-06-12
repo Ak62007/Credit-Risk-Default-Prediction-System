@@ -22,6 +22,8 @@ FEATURES_DIR = PROCESSED_DATA_DIR / 'features'
 FEATURES_DIR.mkdir(parents=True, exist_ok=True)
 
 DROP_COLS = ['inq_fi',
+'funded_amnt_inv',
+'funded_amnt',
 'sec_app_fico_range_low',
 'annual_inc_joint',
 'dti_joint',
@@ -64,8 +66,6 @@ DROP_COLS = ['inq_fi',
 'emp_title']
 
 NUMERICAL_COLS = ['loan_amnt',
-'funded_amnt',
-'funded_amnt_inv',
 'int_rate',
 'installment',
 'annual_inc',
@@ -147,7 +147,7 @@ def split_target_and_features(df: pd.DataFrame) -> list[pd.DataFrame, pd.Series]
     logger.info("features and target are splitted successfully...")
     return n_df, target
 
-def drop_columns(df: pd.DataFrame) -> pd.DataFrame:
+def drop_columns(df: pd.DataFrame, drop_cols: list[str] = DROP_COLS) -> pd.DataFrame:
     """Drops the unusable columns given in the DROP_COLS"""
     logger.info(f'Inside Function: {drop_columns.__name__}')
     logger.info('Drpping columns given un the DROP_COLS')
@@ -202,25 +202,25 @@ def building_preprocessor(num_pipeline: Pipeline, cat_pipeline: Pipeline) -> Col
     logger.info('preprocessor created sucessfully!')
     return preprocessor
 
-def prep_one_split(df: pd.DataFrame) -> tuple[np.array, np.array]:
+def prep_one_split(df: pd.DataFrame, drop_cols: list[str] = DROP_COLS) -> tuple[pd.DataFrame, pd.Series]:
     """Runs the whole pipeline before before transform"""
     logger.info(f'Inside Function: {prep_one_split.__name__}')
     features, target = split_target_and_features(df)
     features = add_credit_yrs(features)
     features = add_fico_mid(features)
-    features = drop_columns(features)
+    features = drop_columns(features, drop_cols=drop_cols)
     
     return features, target
 
-def building_features(input_path: Path = AFTER_EDA, output_path: Path = FEATURES_DIR):
+def building_features(input_path: Path = AFTER_EDA, output_path: Path = FEATURES_DIR, drop_cols: list[str] = DROP_COLS):
     """Complete feature creation pipeline in one function"""
     logger.info(f'Inside Function: {building_features.__name__}')
     train_df, val_df, test_df, _ = load_splits(path=input_path)
     logger.info(f"processing all the splits and saving them...")
     
-    train_feat, y_train = prep_one_split(train_df)
-    val_feat, y_val = prep_one_split(val_df)
-    test_feat, y_test = prep_one_split(test_df)
+    train_feat, y_train = prep_one_split(train_df, drop_cols=drop_cols)
+    val_feat, y_val = prep_one_split(val_df, drop_cols=drop_cols)
+    test_feat, y_test = prep_one_split(test_df, drop_cols=drop_cols)
     
     logger.info("fitting and learning the stats of train_df...")
     num_pipeline, cat_pipeline = create_pipeline()
