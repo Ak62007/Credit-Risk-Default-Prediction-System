@@ -462,3 +462,61 @@ Captured here as a TODO so the decisions aren't forgotten:
 - Day-6 finding on `application_type` ("joint apps default 30% vs 21%")
   remains true for the *raw data* but does not apply to our modeling
   splits. Day-6 is not edited; this caveat is the correction.
+
+# Feature Engineering
+## M6: Baseline modeling (Pass-1 features)
+
+Three baseline models trained on Pass-1 feature matrix (median imputation, one-hot encoding, drop free-text columns, regime A — included LendingClub's credit-decision features `grade`, `sub_grade`, `int_rate`).
+
+**Test set performance:**
+
+| Model | PR-AUC | ROC-AUC | Brier |
+|-------|--------|---------|-------|
+| LR    | 0.311  | 0.697   | 0.130 |
+| RF    | 0.291  | 0.678   | 0.132 |
+| XGB   | 0.307  | 0.697   | 0.131 |
+
+Threshold tuned via cost matrix (FN = $10000, FP = $2000) on validation set. Optimal threshold ≈ 0.15 for LR and XGB, 0.18 for RF — all near the base rate of 0.17, confirming probabilities were well-calibrated.
+
+**Key finding from M6:** three structurally different model families (linear, bagged trees, boosted trees) converged within 2 PR-AUC points. This convergence motivated Pass-2 feature engineering rather than further model tuning — when three different model families produce nearly identical performance, the bottleneck is features or inherent signal, not model capacity.
+
+## Pass-2: Feature engineering experiments
+
+### Regime A vs Regime B comparison
+
+Tested whether the model's predictive performance depends on LendingClub's own credit-decision features.
+
+- Regime A: includes `grade`, `sub_grade`, `int_rate`.
+- Regime B: excludes them.
+
+| Model | Regime A test PR-AUC | Regime B test PR-AUC | Delta |
+|-------|----------------------|----------------------|-------|
+| LR    | 0.311                | 0.301                | −0.010 |
+| RF    | 0.291                | 0.274                | −0.017 |
+| XGB   | 0.307                | 0.299                | −0.008 |
+
+**Finding:** Removing LC's credit-decision features cost 1–2 PR-AUC points. The model draws meaningful signal from primitive features (income, DTI, credit history) independently of LC's pricing. Project continued in regime B going forward to demonstrate the model has independent predictive signal beyond piggybacking on LC's risk system.
+
+### Pass-2 feature engineering experiments (regime B)
+
+Tested six structurally different feature engineering hypotheses against three baseline models. No experiment moved test PR-AUC by more than 0.01 on any model.
+
+| Experiment | Hypothesis | Result |
+|------------|-----------|--------|
+| Ordinal encoding for `grade`, `sub_grade` | One-hot destroys ordinal signal that LR can't recover | Flat (skipped in regime B since these are dropped) |
+| Target encoding for `zip_code` (out-of-fold CV) | Geographic risk is real signal being thrown away | Flat |
+| Engineered ratios (`loan_to_income`, `installment_to_income`) | LR can't construct ratios from raw columns; explicit ratios should help | Flat |
+| Missingness indicators (`mths_since_*` family + bureau-data cohort indicator) | Null is informative — encodes "event never happened" rather than absence of data | Flat |
+| All combined | Combinations of weak individual effects might unlock interaction signal | Flat |
+| Text features via target encoding (`title`, `emp_title`) | Free-text occupation/loan-title fields contain semantic risk signal | Flat |
+
+**Pass-2 conclusion:** Six independent experiments confirm a robust predictive ceiling at test PR-AUC ≈ 0.30 on LendingClub origination data. The ceiling holds across three model families (LR, RF, XGB) and across structurally different feature representations (encoding, ratios, indicators, text). This indicates the ceiling is inherent to the data, not to feature representation or model capacity.
+
+**Interpretation:** 24-month default outcomes depend heavily on borrower life events occurring after loan issuance — job loss, illness, divorce, recession exposure — that are unobservable at origination. Origination features cap out at the point where unobservable post-issuance events begin to dominate the outcome.
+
+**Implications for project scope:**
+- Pass-1 regime-B feature pipeline retained as production feature set. Pass-2 additions discarded as adding implementation cost without measurable benefit.
+- M7 hyperparameter tuning expectations recalibrated: targeting 0.32–0.33 test PR-AUC (1–3 point lift from tuning), not 0.40+.
+- Project value will be demonstrated through downstream milestones (production deployment, drift monitoring, fairness audit, error segmentation) rather than through further PR-AUC optimization.
+
+---
