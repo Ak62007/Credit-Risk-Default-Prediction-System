@@ -17,12 +17,14 @@ classifiers = [
 ]
 dependencies = [
     "ipython",
+    "ipywidgets>=8.1.8",
     "jupyterlab",
     "kaggle>=2.1.2",
     "loguru",
     "matplotlib",
     "notebook",
     "numpy",
+    "optuna>=4.9.0",
     "pandas",
     "pip",
     "pyarrow>=24.0.0",

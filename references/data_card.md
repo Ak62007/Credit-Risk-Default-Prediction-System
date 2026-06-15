@@ -520,3 +520,56 @@ Tested six structurally different feature engineering hypotheses against three b
 - Project value will be demonstrated through downstream milestones (production deployment, drift monitoring, fairness audit, error segmentation) rather than through further PR-AUC optimization.
 
 ---
+
+## M7: XGBoost hyperparameter tuning with Optuna
+
+Tuned XGBoost via Optuna (TPE sampler, 50 trials, seed=42) using
+time-series 5-fold CV on the training set. Search space: 8
+hyperparameters — n_estimators, max_depth, learning_rate (log),
+subsample, colsample_bytree, min_child_weight, reg_alpha (log),
+reg_lambda (log). Objective: maximize mean PR-AUC across folds.
+Best CV PR-AUC: 0.313.
+
+**Best hyperparameters found:**
+| Parameter         | Value     | Range searched |
+|-------------------|-----------|----------------|
+| n_estimators      | 895       | 100-1000       |
+| max_depth         | 7         | 3-10           |
+| learning_rate     | 0.0114    | 0.01-0.3       |
+| subsample         | 0.58      | 0.5-1.0        |
+| colsample_bytree  | 0.77      | 0.5-1.0        |
+| min_child_weight  | 10        | 1-10           |
+| reg_alpha         | ~0        | 1e-8 to 10     |
+| reg_lambda        | ~0        | 1e-8 to 10     |
+
+**Tuned model performance:**
+| Split | PR-AUC | ROC-AUC | Brier |
+|-------|--------|---------|-------|
+| Train | 0.382  | 0.744   | 0.123 |
+| Val   | 0.349  | 0.708   | 0.137 |
+| Test  | 0.310  | 0.694   | 0.130 |
+
+Tuning lifted test PR-AUC from 0.299 (baseline XGB) to 0.310 (+0.011).
+Within the 1-3 point range expected from hyperparameter tuning,
+consistent with the feature ceiling identified in Pass-2.
+
+**Interpretation of chosen hyperparameters:**
+Optuna pushed regularization through structural mechanisms (aggressive
+row subsampling at 0.58, large min_child_weight at 10) rather than
+through L1/L2 leaf-weight regularization (both reg_alpha and reg_lambda
+near zero). Many trees (895) with very small learning rate (0.011) —
+the classic "slow careful learning" pattern. Train PR-AUC decreased
+from baseline's 0.414 to 0.382, indicating less memorization while
+generalization improved.
+
+**Known boundaries of the search:**
+- min_child_weight hit upper bound (10) — expanded search to 1-30 might
+  find slightly better
+- n_estimators landed at 895 of 1000 — expanded range to 2000 might help
+- Deferred as future work; expected gain <0.5 PR-AUC points, below the
+  threshold of meaningful project-level impact
+
+**Calibration check:** Brier (0.130 test) effectively unchanged from
+baseline XGB (0.132). Tuning preserved calibration. Threshold returned
+to 0.16 (cost-optimal theoretical value 0.18), consistent with
+well-calibrated probabilities. Full reliability diagnostic in M8.

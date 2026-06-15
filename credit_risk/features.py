@@ -63,10 +63,12 @@ DROP_COLS = ['inq_fi',
 'zip_code',
 'title',
 'desc',
-'emp_title']
+'emp_title',
+'grade',
+'sub_grade',
+'int_rate',]
 
 NUMERICAL_COLS = ['loan_amnt',
-'int_rate',
 'installment',
 'annual_inc',
 'dti',
@@ -128,8 +130,6 @@ NUMERICAL_COLS = ['loan_amnt',
 
 CATEGORICAL_COLS = [
 'term',
-'grade',
-'sub_grade',
 'emp_length',
 'home_ownership',
 'verification_status',
@@ -151,7 +151,7 @@ def drop_columns(df: pd.DataFrame, drop_cols: list[str] = DROP_COLS) -> pd.DataF
     """Drops the unusable columns given in the DROP_COLS"""
     logger.info(f'Inside Function: {drop_columns.__name__}')
     logger.info('Drpping columns given un the DROP_COLS')
-    n_df = df.drop(columns=DROP_COLS)
+    n_df = df.drop(columns=drop_cols)
     logger.info("Dropped successfully!")
     return n_df
 
