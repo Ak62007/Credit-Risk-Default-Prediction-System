@@ -605,3 +605,43 @@ for any downstream risk-based pricing logic, without further
 transformation. The cost-optimal threshold of 0.16 sits near the
 theoretical value (fp_cost / (fp_cost + fn_cost) = 0.18), consistent
 with well-calibrated outputs.
+
+---
+
+## M9: Cost-based threshold framework
+
+Cost-derivation framework documented in references/cost_framework.md.
+Threshold tuning mechanism was implemented in M6 and applied in M7.
+M9's contribution is the standalone documentation artifact explaining
+the cost assumptions and a sensitivity analysis bounding the risk of
+those placeholder estimates.
+
+**Cost model:**
+- FN cost = principal × LGD ≈ $10,000 (estimate: avg loan $15K, LGD ~65%)
+- FP cost = forgone interest ≈ $2,000 (estimate over 36-month loan term)
+- Cost ratio (FN:FP) = 5:1
+
+**Threshold derivation:**
+- Empirical optimum on val: t = 0.16
+- Theoretical optimum: fp_cost / (fp_cost + fn_cost) = 2000/12000 ≈ 0.167
+- Empirical and theoretical agree, confirming calibration (also verified in M8)
+
+**Sensitivity analysis (penalty for using t=0.16 if true cost ratio differs):**
+| True ratio | Penalty |
+|------------|---------|
+| 3:1        | ~8%     |
+| 4.5:1      | ~0%     |
+| 6:1        | ~1%     |
+| 10:1       | ~18%    |
+
+**Findings:**
+- Model is robust within the plausible range (3:1 to 6:1) — at most 8% off optimum.
+- Outside this range, the cost penalty grows substantially. The 10:1 case
+  (FN much more expensive than assumed) costs 18% more than optimal.
+- Asymmetry: underestimating FN cost is more dangerous than overestimating
+  it. If true ratio is uncertain, a more conservative threshold is safer.
+
+**Production implications:** In a deployed system, cost numbers would be
+reviewed quarterly with finance teams and potentially per-loan rather
+than global. The framework generalizes to per-loan cost computation
+without architectural change.

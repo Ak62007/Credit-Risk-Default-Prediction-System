@@ -138,6 +138,16 @@ CATEGORICAL_COLS = [
 'initial_list_status'
 ]
 
+def sorting_with_issue_d(df: pd.DataFrame) -> pd.DataFrame:
+    """sorts the rows wrt issue_d"""
+    logger.info("Sorting the dataframe wrt to issue_d...")
+    assert 'issue_d' in df.columns, (f"{'issue_d'} not find in the dataframe")
+    df_issue_d = df['issue_d']
+    sorted_idx = df_issue_d.sort_values().index
+    df = df.loc[sorted_idx]
+    logger.info("Sorted successfully!")
+    return df
+
 def split_target_and_features(df: pd.DataFrame) -> list[pd.DataFrame, pd.Series]:
     """splits the target and the features from the data and returns it"""
     logger.info(f'Inside Function: {split_target_and_features.__name__}')
@@ -205,6 +215,7 @@ def building_preprocessor(num_pipeline: Pipeline, cat_pipeline: Pipeline) -> Col
 def prep_one_split(df: pd.DataFrame, drop_cols: list[str] = DROP_COLS) -> tuple[pd.DataFrame, pd.Series]:
     """Runs the whole pipeline before before transform"""
     logger.info(f'Inside Function: {prep_one_split.__name__}')
+    df = sorting_with_issue_d(df)
     features, target = split_target_and_features(df)
     features = add_credit_yrs(features)
     features = add_fico_mid(features)
