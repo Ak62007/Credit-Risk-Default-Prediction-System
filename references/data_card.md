@@ -573,3 +573,35 @@ generalization improved.
 baseline XGB (0.132). Tuning preserved calibration. Threshold returned
 to 0.16 (cost-optimal theoretical value 0.18), consistent with
 well-calibrated probabilities. Full reliability diagnostic in M8.
+
+---
+
+## M8: Calibration analysis
+
+Diagnostic on tuned XGBoost from M7.
+
+**Val Brier score: 0.137.** Constant-base-rate predictor reference:
+0.147 (where base_rate × (1 - base_rate) = 0.18 × 0.82). Model beats
+the constant predictor — calibration is meaningful.
+
+**Reliability diagram (val, 10 equal-width bins):** Calibration curve
+lies close to the diagonal across the bulk of predicted probabilities
+(0 to ~0.6), which contains essentially all val mass per the
+predicted-probability histogram. Slight upward deviation at predicted
+0.7+ (model underconfident — empirical rate higher than predicted),
+but histogram shows near-empty bins in that region (few hundred loans
+out of 420k). Interpreted as small-N noise, not systematic
+miscalibration.
+
+**Decision: no recalibration step applied.** `CalibratedClassifierCV`
+with isotonic regression was considered as the standard remediation
+but not applied — diagnostic shows existing probabilities are honest
+across the regions with operational volume. Adding a recalibration
+step would solve a problem that doesn't exist on this data.
+
+**Implication for downstream use:** Model probabilities can be used
+directly for cost-based threshold tuning (M9 / already done in M6) and
+for any downstream risk-based pricing logic, without further
+transformation. The cost-optimal threshold of 0.16 sits near the
+theoretical value (fp_cost / (fp_cost + fn_cost) = 0.18), consistent
+with well-calibrated outputs.
