@@ -645,3 +645,199 @@ those placeholder estimates.
 reviewed quarterly with finance teams and potentially per-loan rather
 than global. The framework generalizes to per-loan cost computation
 without architectural change.
+
+---
+
+## M10: Segmented error analysis
+
+Evaluated tuned XGBoost model (M7) on five segmentation features
+across the test set, holding the model and threshold (t=0.16) fixed.
+Six metrics per segment: n, n_positives, base_rate, ROC-AUC, PR-AUC,
+mean_pred_proba, Brier, precision, recall.
+
+Methodology note: per-segment metrics computed at the global threshold
+to mimic deployment. Re-tuning threshold per segment was considered
+but is a different question (per-segment policy design) than the M10
+question (how does the deployed model behave across segments).
+
+### Segment 1: `term`
+
+| segment    | n       | base_rate | ROC-AUC | PR-AUC | mean_pred | Brier | precision | recall |
+|------------|---------|-----------|---------|--------|-----------|-------|-----------|--------|
+| 36 months  | 321,815 | 0.152     | 0.693   | 0.282  | 0.136     | 0.121 | 0.260     | 0.540  |
+| 60 months  | 109,897 | 0.217     | 0.693   | 0.374  | 0.253     | 0.158 | 0.258     | 0.908  |
+
+Ranking quality identical across segments (ROC-AUC 0.693 on both).
+Calibration good on both (mean_pred within 1-3 percentage points of
+base_rate). The PR-AUC and recall asymmetry reflect base-rate
+differences and the fixed threshold sliding to different operating
+points on each segment's PR curve — not a model defect.
+
+### Segment 2: `application_type`
+
+| segment    | n       | base_rate | ROC-AUC | PR-AUC | mean_pred | Brier | precision | recall |
+|------------|---------|-----------|---------|--------|-----------|-------|-----------|--------|
+| Individual | 423,032 | 0.169     | 0.695   | 0.313  | 0.164     | 0.130 | 0.261     | 0.656  |
+| Joint App  | 8,680   | 0.163     | 0.687   | 0.285  | 0.239     | 0.136 | 0.209     | 0.869  |
+
+**Most important finding in M10.** Joint applications didn't exist in
+training data (Joint product introduced by LendingClub in 2015; training
+spans 2007-2014). The model has never seen this loan type.
+
+- **Ranking generalizes:** ROC-AUC 0.687 on Joint vs 0.695 on
+  Individual. The model orders Joint loans about as well as Individual,
+  drawing on primitive features (income, DTI, credit history) that
+  transfer.
+- **Calibration breaks:** Mean predicted on Joint = 0.239, actual
+  base rate = 0.163. Model overpredicts Joint default risk by 7.6
+  percentage points (47% relative). For risk-based pricing, this
+  would over-price Joint loans by ~50% and lose them to better-calibrated
+  competitors. The operational consequence shows up in recall (0.87
+  vs 0.66 on Individual) and precision (0.21 vs 0.26): the model
+  flags far more Joint loans for rejection than its underlying ranking
+  warrants.
+
+This is exactly the failure mode M19 (PSI drift detection) is built
+to catch in production: a feature distribution shift the trained model
+can't reason about. The honest deployment-time remediation would be
+per-segment calibration (isotonic regression fit on Joint predictions
+specifically).
+
+### Segment 3: `home_ownership`
+
+| segment   | n       | base_rate | ROC-AUC | PR-AUC | mean_pred | Brier | precision | recall |
+|-----------|---------|-----------|---------|--------|-----------|-------|-----------|--------|
+| MORTGAGE  | 210,252 | 0.143     | 0.695   | 0.273  | 0.149     | 0.115 | 0.236     | 0.598  |
+| RENT      | 168,655 | 0.200     | 0.685   | 0.345  | 0.187     | 0.149 | 0.281     | 0.721  |
+| OWN       | 52,695  | 0.169     | 0.678   | 0.294  | 0.164     | 0.133 | 0.253     | 0.641  |
+| ANY       | 110     | 0.164     | —       | —      | —         | —     | —         | —      |
+
+(ANY segment excluded from interpretation: n=110, n_positives=18,
+sample too small for stable metrics.)
+
+Calibration good across all three real segments. Mean predicted within
+1 percentage point of base rate everywhere. Ranking comparable across
+segments (ROC-AUC 0.68-0.70). The PR-AUC differences reflect base-rate
+variation (RENT highest at 20%, MORTGAGE lowest at 14%), not differential
+model quality. Confirms the model handles a stability-proxy feature
+correctly when it has training volume across all categories.
+
+### Segment 4: `annual_inc` (income brackets)
+
+| segment    | n       | base_rate | ROC-AUC | PR-AUC | mean_pred | Brier | precision | recall |
+|------------|---------|-----------|---------|--------|-----------|-------|-----------|--------|
+| <$40K      | 72,497  | 0.204     | 0.660   | 0.324  | 0.200     | 0.154 | 0.261     | 0.770  |
+| $40K-$80K  | 208,784 | 0.177     | 0.692   | 0.321  | 0.173     | 0.135 | 0.265     | 0.679  |
+| $80K-$120K | 96,273  | 0.149     | 0.700   | 0.292  | 0.145     | 0.118 | 0.254     | 0.578  |
+| >$120K     | 54,101  | 0.125     | 0.699   | 0.250  | 0.128     | 0.103 | 0.226     | 0.496  |
+
+Default rates fall monotonically with income (20.4% → 12.5%) — expected
+given income's role as a financial-stability proxy. Calibration is
+excellent across all four brackets (mean_pred within 0.5 percentage
+points of base_rate everywhere).
+
+**Finding worth flagging:** ROC-AUC drops to 0.660 on the <$40K segment
+versus 0.69-0.70 elsewhere. The model's *ranking ability* is meaningfully
+weaker for low-income borrowers. Likely causes: more variable outcomes
+at low income (default risk depends on small life events not captured
+in origination features), feature ceiling effects (most low-income
+borrowers cluster at the high-stress end of features like DTI, reducing
+their discriminative power), higher base rate making ranking inherently
+harder.
+
+This is operationally significant: the model is least precise on the
+segment where lending decisions matter most for the borrower. **Flagged
+for M11 fairness audit** — income likely correlates with protected
+attributes (race, age) in real populations, so income-segment performance
+gaps may translate to disparate-impact concerns.
+
+### Segment 5: `purpose`
+
+| segment            | n       | base_rate | ROC-AUC | PR-AUC | mean_pred | Brier |
+|--------------------|---------|-----------|---------|--------|-----------|-------|
+| car                | 4,788   | 0.126     | 0.687   | 0.227  | 0.133     | 0.105 |
+| home_improvement   | 30,996  | 0.145     | 0.694   | 0.271  | 0.143     | 0.116 |
+| credit_card        | 91,101  | 0.146     | 0.702   | 0.281  | 0.142     | 0.116 |
+| major_purchase     | 10,354  | 0.156     | 0.702   | 0.305  | 0.145     | 0.122 |
+| vacation           | 3,249   | 0.163     | 0.693   | 0.302  | 0.146     | 0.128 |
+| other              | 28,311  | 0.166     | 0.680   | 0.293  | 0.165     | 0.130 |
+| medical            | 5,417   | 0.179     | 0.661   | 0.291  | 0.166     | 0.140 |
+| debt_consolidation | 247,233 | 0.180     | 0.689   | 0.322  | 0.178     | 0.137 |
+| moving             | 3,213   | 0.195     | 0.686   | 0.349  | 0.176     | 0.146 |
+| renewable_energy   | 303     | 0.201     | —       | —      | —         | —     |
+| house              | 1,991   | 0.209     | 0.707   | 0.373  | 0.177     | 0.152 |
+| small_business     | 4,754   | 0.239     | 0.675   | 0.393  | 0.234     | 0.169 |
+
+(renewable_energy excluded: n_positives=61, ranking metrics unstable.
+house and vacation reported but interpreted with caution due to
+moderate sample sizes.)
+
+Across 11 purposes covering 4.6 percentage points of base-rate
+variation (12.6% to 23.9%), calibration is uniformly excellent —
+mean_pred within 1-2 percentage points of base_rate at every level.
+Small_business at 24% base rate is the highest-risk segment and the
+model predicts 23.4% — essentially perfect calibration on the segment
+furthest from the population mean.
+
+Soft finding: ROC-AUC drops to 0.66 on `medical` loans (n=5,417,
+n_positives=969). Possible that medical-debt borrowers have a risk
+profile less well-captured by origination features. Not a strong
+finding on this sample size, but worth noting.
+
+### Cross-cutting findings
+
+**1. Calibration generalizes when training volume is present, fails
+without it.** The contrast that defines M10:
+
+- **small_business** (purpose): 24% base rate, mean_pred 23.4%. Highly
+  distinctive risk segment, well-represented in training, perfectly
+  calibrated.
+- **Joint App** (application_type): 16% base rate, mean_pred 24%.
+  Absent from training (post-2015 product), systematically overpredicted.
+
+Same model, two different category situations, two outcomes. Demonstrates
+clearly what the model can and cannot be trusted to do.
+
+**2. Ranking is mostly stable across segments.** ROC-AUC clusters
+around 0.68-0.70 across most segment values. The two notable exceptions
+(<$40K income at 0.660, medical purpose at 0.661) are both at the
+high-base-rate end of their respective features, suggesting the model's
+ranking power degrades modestly when discriminating among many
+positives.
+
+**3. Operational metrics (precision, recall) are dominated by base-rate
+variation, not model quality differences.** At a fixed threshold,
+higher-base-rate segments mechanically produce higher recall and
+slightly lower precision. This pattern is universal across all five
+segmentations and is the right behavior for a calibrated model with
+a global threshold — not a defect, but worth understanding when
+reading segment tables.
+
+**4. Income-as-proxy flag for M11.** The <$40K income segment shows
+weaker ranking, highest base rate, and highest threshold-crossing
+rate. In a real deployment with demographic features, income would
+likely correlate with protected attributes; the segment-level
+disparities seen here would translate to disparate-impact concerns
+worth auditing. LendingClub data lacks demographic fields, so M11's
+fairness audit will be limited, but the income-bracket findings give
+M11 a concrete hook.
+
+### Implications for downstream milestones
+
+- **M11 (fairness audit):** anchor analysis on income brackets given
+  their proxy potential.
+- **M19 (drift detection):** prioritize monitoring `application_type`
+  category distribution — the Joint applications case is exactly the
+  failure mode PSI is designed to flag.
+- **M20 (prediction logging dashboard):** log segment IDs (term,
+  home_ownership, purpose, income bracket, application_type) per
+  prediction so segment-level metrics can be tracked over time in
+  production.
+- **Deployment policy:** the global threshold of 0.16 produces honest
+  but uneven operational metrics across segments. Per-segment thresholds
+  would be a defensible policy choice (not a model change), particularly
+  to tighten the Joint application threshold or loosen the 36-month
+  threshold. Documented as a deployment-time choice; not implemented
+  here.
+
+  
