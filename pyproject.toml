@@ -32,6 +32,7 @@ dependencies = [
     "python-dotenv",
     "ruff",
     "scikit-learn",
+    "torch>=2.12.1",
     "tqdm",
     "typer",
     "xgboost>=3.2.0",
