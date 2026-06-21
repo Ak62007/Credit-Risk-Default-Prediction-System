@@ -840,4 +840,195 @@ M11 a concrete hook.
   threshold. Documented as a deployment-time choice; not implemented
   here.
 
-  
+---
+
+## M11: Fairness audit
+
+### Data limitation
+
+LendingClub strips demographic data (race, gender, age) before public
+release. A direct fairness audit on protected attributes is therefore
+not possible on this dataset. M11 conducts a *proxy* audit using
+features known to correlate with protected attributes in US
+populations: income brackets (correlates with race, age) and home
+ownership status (correlates with race, age, wealth). Findings should
+be read as *suggestive* of how the model would behave on real
+demographic data, not as direct claims about protected-attribute
+fairness.
+
+### Methodology
+
+For each proxy feature, computed four fairness metrics per segment on
+the test set at the fixed deployment threshold (t=0.16):
+
+- **Selection rate** — fraction of segment approved (predicted class 0).
+  For demographic parity.
+- **TPR (true positive rate)** — fraction of actual defaulters in
+  segment caught by the model. For equalized odds.
+- **FPR (false positive rate)** — fraction of actual non-defaulters
+  in segment incorrectly rejected. For equalized odds. **The
+  operationally important harm metric for lending — measures wrongful
+  rejection of good borrowers.**
+- **Precision** — when the model predicts default in this segment,
+  fraction of those predictions that are correct. For predictive
+  parity.
+
+Disparate impact ratios computed across segments using the 80% rule
+(EEOC convention): ratio = min(metric) / max(metric), flagged if
+below 0.8.
+
+### Proxy 1: income brackets
+
+| segment    | base_rate | selection | TPR   | FPR   | precision |
+|------------|-----------|-----------|-------|-------|-----------|
+| <$40K      | 0.204     | 0.399     | 0.770 | 0.557 | 0.261     |
+| $40K-$80K  | 0.177     | 0.548     | 0.679 | 0.404 | 0.265     |
+| $80K-$120K | 0.149     | 0.661     | 0.578 | 0.297 | 0.254     |
+| >$120K     | 0.125     | 0.724     | 0.496 | 0.244 | 0.226     |
+
+**Disparate impact ratios:**
+
+| Metric            | Ratio | Flag |
+|-------------------|-------|------|
+| Selection rate    | 0.55  | YES  |
+| TPR               | 0.64  | YES  |
+| FPR               | 0.44  | YES  |
+| Precision         | 0.85  | No   |
+
+**Findings:**
+
+- **Selection rate violates demographic parity (0.55).** Low-income
+  borrowers are approved at 40% vs 72% for high-income. This reflects
+  real base-rate differences (low-income default rate 20%, high-income
+  13%); a calibrated model should reject more low-income loans. Not
+  inherently unfair for a risk model, but reported for completeness.
+- **TPR violates equalized odds (0.64).** Low-income defaulters
+  are caught at 77% vs 50% for high-income. The model is more
+  vigilant about low-income loans.
+- **FPR violates equalized odds severely (0.44).** **56% of non-
+  defaulting low-income borrowers are wrongly rejected, vs 24% for
+  high-income.** Good low-income borrowers face >2x the wrongful
+  rejection rate of good high-income borrowers. This is the
+  substantive disparate-impact finding.
+- **Predictive parity holds (0.85).** When the model says "will
+  default" in any income bracket, it's right 23-27% of the time —
+  the model's verdicts are equally (un)reliable across income groups.
+
+### Proxy 2: home ownership
+
+| segment   | base_rate | selection | TPR   | FPR   | precision |
+|-----------|-----------|-----------|-------|-------|-----------|
+| MORTGAGE  | 0.143     | 0.637     | 0.598 | 0.323 | 0.236     |
+| OWN       | 0.169     | 0.571     | 0.641 | 0.385 | 0.253     |
+| RENT      | 0.200     | 0.486     | 0.721 | 0.462 | 0.281     |
+
+(ANY segment excluded: n=110, sample too small.)
+
+**Disparate impact ratios:**
+
+| Metric            | Ratio | Flag |
+|-------------------|-------|------|
+| Selection rate    | 0.76  | YES  |
+| TPR               | 0.83  | No   |
+| FPR               | 0.70  | YES  |
+| Precision         | 0.84  | No   |
+
+**Findings:**
+
+- **Same pattern replicates.** RENT is the disadvantaged segment by
+  every metric, matching low-income's role in the previous audit.
+- **FPR violates equalized odds (0.70).** 46% of non-defaulting
+  renters are wrongly rejected vs 32% of non-defaulting mortgage-
+  holders. The disparate-impact pattern is not idiosyncratic to
+  income — it replicates on home ownership.
+
+### Cross-cutting finding: structural disparate impact
+
+The FPR disparity pattern appears in both proxies (income ratio 0.44;
+home ownership ratio 0.70). RENT and <$40K segments are partially
+overlapping (low-income people rent more) but not identical, so this
+isn't a single confounded finding. It's the same structural pattern
+showing up across two different feature distributions.
+
+**The mechanism is the impossibility theorem of fairness**
+(Chouldechova 2017): a calibrated model on data with differing
+base rates across groups cannot satisfy predictive parity, equalized
+odds, and demographic parity simultaneously. The model satisfies
+predictive parity (verdicts equally reliable across groups) and
+calibration (probabilities match base rates). It pays the cost in
+equalized odds — particularly FPR. Higher-base-rate groups face
+higher false positive rates because the model is correctly more
+pessimistic about them in expectation, and that pessimism rejects
+more good borrowers in absolute terms.
+
+**This is not a bug.** It is a structural property of risk modeling
+on data with group-correlated base rates. The disparity exists
+because the underlying default rates differ. The same disparity
+would emerge from any calibrated model on this data, including a
+hypothetical perfect-information lender.
+
+**However, the operational harm is real.** Whether or not the cause
+is structural, the consequence is that good low-income and renting
+borrowers are wrongly rejected at substantially higher rates than
+good high-income and homeowning borrowers. Under US disparate-impact
+law (where these proxies correlate with race and age), this would
+likely trigger a fair-lending review.
+
+### Remediation options
+
+Four ways to reduce the FPR disparity, each with tradeoffs:
+
+1. **Accept the disparity.** Defensible only if the model is used in
+   a context not subject to fair-lending law. Not defensible for a
+   real US lender.
+2. **Per-segment thresholds.** Use different thresholds for different
+   income or home-ownership groups. Reduces selection-rate and FPR
+   disparity but introduces explicit group-based decision-making,
+   which is itself legally contested under disparate-treatment law.
+3. **Optimize for equalized odds during training.** Train the model
+   with a fairness constraint (e.g., Hardt et al. 2016 post-processing,
+   or reweighing during training). Reduces FPR disparity but degrades
+   calibration and aggregate accuracy.
+4. **Add features that reduce the model's reliance on income-correlated
+   patterns.** External data (employment history depth, savings account
+   balance, rent payment history) might let the model discriminate
+   among low-income borrowers more accurately, narrowing the FPR gap.
+   Preferred remediation but requires data acquisition.
+
+For this project, no remediation is applied. M11 documents the
+disparity rather than fixes it, on the grounds that a portfolio
+demonstrating awareness of the structural tradeoff is more valuable
+than one applying a one-line fix without that context.
+
+### Limitations
+
+- Income and home ownership are proxies, not protected attributes.
+  Correlations with race, age, and gender vary across populations and
+  geographies; conclusions here are suggestive of likely demographic
+  disparities, not direct measurements.
+- No demographic attribute data was available for the analysis.
+- The 80% rule is a regulatory convention, not a mathematical truth.
+  Marginal cases (ratios near 0.8) warrant case-by-case judgment.
+- Per-segment metrics depend on the global threshold (0.16). A
+  different threshold derived under different cost assumptions would
+  produce different per-segment metrics; the *direction* of disparity
+  is robust, the magnitude is not.
+
+### Implications for downstream milestones
+
+- **M13 (model selection):** Fairness considerations are part of the
+  decision matrix. The current XGBoost satisfies predictive parity and
+  calibration but exhibits structural FPR disparity. A model favoring
+  equalized odds (Path 3 above) would have different tradeoffs and is
+  worth comparing if time permits.
+- **M19 (drift detection):** Monitor per-segment FPR over time. The
+  disparate impact pattern itself can drift — economic conditions
+  affecting different groups asymmetrically would shift FPR ratios
+  across segments. Worth alerting on.
+- **M20 (prediction logging dashboard):** Log per-prediction segment
+  membership (income bracket, home ownership) so per-segment fairness
+  metrics can be tracked in production.
+- **Production deployment:** Real deployment of this model would
+  require additional fair-lending review by compliance teams. The
+  M11 finding alone would not authorize production use without that
+  review.
