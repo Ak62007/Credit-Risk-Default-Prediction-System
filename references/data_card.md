@@ -1133,3 +1133,111 @@ and Brier. M13's decision matrix shifts from "which is more accurate"
 to operational factors: training/inference latency, interpretability,
 deployment complexity, hyperparameter stability, and segment-level
 behavior. The decision will be made on those grounds, not on PR-AUC.
+
+---
+
+## M13: Final model selection
+
+Two candidates tied on primary metrics after M12: tuned XGBoost
+(M7) and MLP (M12). M13 evaluates them across operational
+dimensions to defend a final selection. Model comparison also
+includes the LR baseline and 3-model probability-average ensemble
+as reference points, though only XGBoost and MLP are treated as
+shipping candidates.
+
+### Ensemble reference point
+
+Averaged predicted probabilities from LR, tuned XGBoost, and MLP
+on val and test. Threshold re-tuned on val. Motivation: ensembling
+literature suggests uncorrelated learners can improve on individual
+models. Model correlation check on val predictions: LR-XGB 0.92,
+LR-MLP 0.87, XGB-MLP 0.89. High correlation caps expected gain.
+
+| Model | Test PR-AUC | Test ROC-AUC | Test Brier |
+|-------|-------------|--------------|------------|
+| Tuned XGB | 0.310 | 0.694 | 0.130 |
+| Ensemble (avg 3 probs) | 0.313 | 0.697 | 0.130 |
+
+**Ensemble lift: +0.002 PR-AUC.** Within retrain noise. Not shipped
+due to 3x inference cost, tripled operational surface (three models
+to version/monitor/retrain), and marginal PR-AUC gain. Documented
+as confirmation that convergence is real: three algorithmically
+different models cannot combine to break the feature ceiling.
+
+### Decision matrix: XGBoost vs MLP
+
+| Dimension | Tuned XGBoost | MLP | Winner |
+|-----------|---------------|-----|--------|
+| Test PR-AUC | 0.310 | 0.305 | XGBoost (marginal) |
+| Test ROC-AUC | 0.694 | 0.693 | Tie |
+| Test Brier | 0.130 | 0.131 | Tie |
+| Single-row latency (median) | 1.43 ms | 1.21 ms | MLP (marginal) |
+| Single-row latency (P95) | 1.77 ms | 1.54 ms | MLP (marginal) |
+| Batch-1000 latency | 4.20 ms | 2.42 ms | MLP |
+| Model file size | 5.4 MB | 0.12 MB | MLP |
+| Deployment footprint (with deps) | Small (sklearn only) | Large (PyTorch adds ~500MB+) | XGBoost |
+| Perturbation robustness (2%) | -0.003 PR-AUC | -0.001 PR-AUC | Tie |
+| Perturbation robustness (5-10%) | Comparable | Comparable | Tie |
+| Directional expectation tests | Pass (DTI ↑, income ↑) | Pass (DTI ↑, income ↑) | Tie |
+| Calibration | Well-calibrated (M8) | Well-calibrated | Tie |
+| Fairness (M11 FPR disparity) | Structural | Same structural pattern | Tie |
+| Interpretability (SHAP for ECOA) | Native, mature | Gradient-based methods, weaker | XGBoost (significant) |
+| Retraining stability | Stable with fixed hyperparams | Sensitive to random init | XGBoost |
+| Operational maturity | Battle-tested in fintech | Less common for tabular | XGBoost |
+
+### Latency methodology note
+
+Latency measured on local CPU with preprocessor included in the
+timed block (raw dataframe → probability). Warmup 10 trials, 100
+timed trials for single-row, 50 for batch. Fixed overhead
+(~1.2-1.5 ms per call, mostly ColumnTransformer setup) dominates
+single-row latency; per-row work is <0.005 ms. Implication for
+M15/M18: micro-batching would substantially improve throughput
+under load. Production latency will depend on serving
+environment; relative ordering (MLP marginally faster) should
+hold.
+
+### Decision: Tuned XGBoost
+
+MLP wins several rows (latency, model size, marginal robustness).
+None are decisive at the observed margins — both models are
+sub-2ms end-to-end, both fit in memory, both survive noise
+comparably. The tie-breaker is **interpretability for ECOA
+compliance.**
+
+The Equal Credit Opportunity Act requires lenders to provide
+specific adverse-action reasons for credit denials. SHAP-based
+per-prediction explanations from gradient boosting are the mature,
+regulator-accepted pattern for this. Gradient-based explanation
+methods for neural networks exist but are less validated in
+compliance contexts. For a real credit deployment, this
+categorical advantage outweighs MLP's marginal wins on other
+dimensions.
+
+Secondary factor: **operational maturity.** XGBoost is deployed at
+scale across fintech; PyTorch is less common for tabular
+production. The engineering community, tooling, and troubleshooting
+knowledge favor XGBoost for this problem class.
+
+Ensemble was considered and rejected: +0.002 PR-AUC lift did not
+justify 3x inference cost and tripled operational surface.
+
+### What is not being addressed
+
+- The M11 structural FPR disparity (~2x wrongful rejection rate
+  for low-income vs high-income non-defaulters) applies equally
+  to both models. Model selection does not resolve this — remediation
+  would require different training-time approaches (equalized-odds
+  constrained training) or per-segment thresholds. Documented but
+  not addressed in M13.
+- Latency measured on local CPU. Production numbers would differ.
+
+### Implications for downstream milestones
+
+- **M14 (MLflow):** log tuned XGBoost as the selected production model.
+- **M15 (FastAPI service):** wrap XGBoost pipeline. SHAP-based reason
+  codes returned alongside probability and decision.
+- **M17 (Docker):** sklearn-based image, ~200-300 MB expected. Well
+  under 500 MB budget.
+- **M19 (drift detection):** monitor per-segment FPR alongside PSI
+  to track the M11 structural disparity over time.
