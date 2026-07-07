@@ -22,6 +22,7 @@ dependencies = [
     "kaggle>=2.1.2",
     "loguru",
     "matplotlib",
+    "mlflow>=3.14.0",
     "notebook",
     "numpy",
     "optuna>=4.9.0",
