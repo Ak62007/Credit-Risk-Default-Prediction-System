@@ -1241,3 +1241,124 @@ justify 3x inference cost and tripled operational surface.
   under 500 MB budget.
 - **M19 (drift detection):** monitor per-segment FPR alongside PSI
   to track the M11 structural disparity over time.
+
+---
+
+## M14: MLflow experiment tracking (retroactive)
+
+Set up MLflow to make the project's experiment history queryable.
+Runs from M6-M13 were logged retroactively from saved artifacts on
+disk, rather than during original training. This shifts M14's focus
+from "learn MLflow" to "design what should have been tracked" —
+schema design being the actual milestone skill.
+
+### Setup
+
+Backend: SQLite at project root (`sqlite:///mlflow.db`).
+File-based backend chosen originally, but MLflow 3.5+ has deprecated
+it in favor of SQLite for better querying and reliability. Switched
+to SQLite after hitting the deprecation error.
+
+Artifacts: separate directory at project root (`mlartifacts/`), one
+subfolder per experiment. Configured via
+`mlflow.create_experiment(name, artifact_location=...)` at experiment
+creation time — `set_experiment()` picks a default location relative
+to CWD, which caused artifacts to land inside `notebooks/` on the
+first attempt. Explicitly setting `artifact_location` avoided the
+fragmentation.
+
+Both `mlflow.db` and `mlartifacts/` are gitignored: they're
+regenerable from the logging code, which is the source of truth.
+
+### Schema
+
+Universal params (every run): `model_family`, `threshold`,
+`fn_cost`, `fp_cost`. Model-specific hyperparameters logged as
+additional params (n_estimators, max_depth, etc. for XGBoost;
+hidden_layers, dropout, epochs, etc. for MLP).
+
+Metrics: 15 per run — 5 metrics (roc_auc, pr_auc, brier_score,
+precision, recall) × 3 splits (train, val, test). Names lowercased
+and hyphens replaced with underscores to satisfy MLflow's naming
+rules. `confusion_matrix` skipped (nested list, not a scalar).
+
+Tags: `milestone` (M6, M7, M12, M13), `regime` (A or B),
+`feature_pass` (pass_1 or pass_2), `tuned` (true/false), `selected`
+(true only for the M13 chosen model), `notes` (free-form).
+
+Artifacts: every file in the model directory gets logged. Includes
+model file (.pkl or .pt state dict), metrics JSON, threshold JSON,
+architecture JSON (MLP), and optuna study (M7).
+
+### Runs logged
+
+Five experiments, 10 total runs.
+
+| Experiment | Runs |
+|---|---|
+| M6_baselines | LR, RF, XGB (regime A, Pass-1) |
+| Pass2_experiments | LR, RF, XGB (regime B, all-experiments combined) |
+| M7_xgb_tuning | Tuned XGBoost from Optuna (50 trials) |
+| M12_mlp | MLP baseline (2 hidden layers, 30 epochs) |
+| M13_final_selection | Ensemble reference, MLP candidate, SELECTED tuned XGB |
+
+The `M13_final_selection` experiment intentionally duplicates the
+tuned XGBoost and MLP runs so the selection process is
+self-contained: someone querying "what's the production model?"
+via `tags.selected = "true"` gets one answer without cross-referencing
+other experiments. The selected run also carries M13 operational
+measurements (latency, model size, perturbation robustness deltas)
+as params — the run is the full production spec.
+
+### What's not logged
+
+Regime-B baselines for LR/RF/XGB were evaluated in notebooks but
+not saved as standalone artifacts, so were not logged retroactively.
+This is a gap — the M13 convergence story references all four model
+families at regime-B, but only the tuned XGB, MLP, and ensemble
+are queryable via MLflow. Documented rather than fabricated.
+
+Pass-2 individual feature-engineering experiments (six hypothesis
+tests) were consolidated into one "combined" run per model family,
+matching what was saved to disk. Individual experiment metrics
+survive in the data card but not in MLflow.
+
+### Reusable logging pattern
+
+Wrote one function, `log_historical_run()`, that takes an
+experiment name, run name, model directory, tags, cost assumptions,
+and additional params. Reads metrics.json, threshold.json, and all
+files in the directory automatically. Called 10 times to log every
+historical run consistently.
+
+Design principle: when a piece of code will run again with different
+arguments, make it a function. Copy-paste with edits invites
+inconsistency — different runs would have different metric names,
+different fields logged, and queries would silently break. The
+function enforces schema by construction.
+
+### Verification queries
+
+Confirmed the schema holds up by running:
+- `metrics.test_pr_auc > 0` across all experiments, sorted
+  descending — all 10 runs appear, ordering matches expected
+  performance ranking (tuned XGB + ensemble at top, RF baseline at
+  bottom).
+- `tags.selected = "true"` — returns one run, the production model.
+- `tags.milestone = "M13"` — returns three candidates.
+- Side-by-side compare of baseline XGB vs tuned XGB — hyperparameter
+  deltas visible, metric deltas visible.
+
+### Implications for downstream milestones
+
+- **M15 (FastAPI):** the selected run's params include the full
+  production spec (hyperparameters, latency, model size). API
+  documentation can reference the MLflow run directly.
+- **M19 (drift detection):** future retrains would log to
+  `M19_drift_retrains` following the same schema. The
+  `feature_pass` and `regime` tags would let drift-triggered runs
+  be compared against the original baseline.
+- **M22 ("what didn't work"):** MLflow makes the Pass-2 flat
+  experiments queryable — all Pass-2 runs have `feature_pass:
+  pass_2` tag, and their metrics show the convergence pattern
+  directly.
