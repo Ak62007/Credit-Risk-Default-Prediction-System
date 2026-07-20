@@ -1362,3 +1362,56 @@ Confirmed the schema holds up by running:
   experiments queryable — all Pass-2 runs have `feature_pass:
   pass_2` tag, and their metrics show the convergence pattern
   directly.
+
+---
+
+## M15 (in progress): SHAP-based reason codes
+
+The milestone plan for M15 calls for the FastAPI endpoint to return "probability +
+decision + reason codes." SHAP (`TreeExplainer`) was chosen for the reason-code
+generation, since it gives exact (not approximated) Shapley values in polynomial
+time specifically for tree-based models — a good fit for the tuned XGBoost model,
+fast enough for synchronous/online inference.
+
+**Correction to the original plan:** M7's description mentioned SHAP for feature
+importance, but it was never actually installed or used at that stage — confirmed
+by checking `pyproject.toml`, the environment, and all notebooks. SHAP is a new
+addition at M15, not a reuse of earlier work.
+
+**Key design finding — margin space vs. probability space.** XGBoost's internal
+prediction is a sum of tree outputs (log-odds/"margin" space); `predict_proba`
+applies a single sigmoid to that sum at the very end. SHAP's additivity property
+(`base_value + sum(shap_values) = raw model output`) is exact in margin space, but
+does not hold if individual SHAP values are converted to probability and summed
+separately — sigmoid is nonlinear, so `sigmoid(a+b+c) ≠ sigmoid(a)+sigmoid(b)+sigmoid(c)`.
+Consequence: reason codes are based on the sign (direction) and relative ranking of
+SHAP values in log-odds space, not on a claimed fixed "N probability points" per
+feature — the same log-odds contribution corresponds to a different real-world
+probability swing depending on where a given applicant's baseline sits (sigmoid's
+slope is `p(1-p)`, steepest near 50%, flattest near the tails).
+
+**One-hot categorical handling.** The preprocessor one-hot-encodes categoricals, so
+`TreeExplainer` returns a separate contribution per dummy column. Verified that
+summing the dummy contributions belonging to one original categorical (e.g.
+`term_ 36 months` + `term_ 60 months`) recovers that feature's total effect — this
+is the aggregation method used to produce human-readable, feature-level reason
+codes rather than confusing per-dummy entries.
+
+**Verification performed.** Two rows manually validated before integrating into
+`predict_one`:
+- One low-risk row (val set): additivity confirmed (`base_value + sum(shap_values)`
+  matched the model's raw margin output to within ~1.5e-6, i.e. float32 precision
+  noise). Base value, converted via sigmoid, landed at 16.64% against a training
+  default rate of 16.65% — effectively exact. Top contributing features (solid
+  income, solid FICO, low DTI pulling toward repayment; 60-month term as the one
+  risk factor) matched domain expectations.
+- One confirmed-default row (target=1): same additivity and base-value checks
+  passed. Top contributing features (recent account openings, recent trade lines
+  opened, elevated DTI, all pushing toward default) matched the well-established
+  "recent credit-seeking behavior + high leverage" default pattern — a strong
+  qualitative signal that both the model and the explainer are behaving sensibly,
+  not just numerically consistent.
+
+**Status:** explainer construction and verification complete; integration into
+`predict_one` (aggregation, ranking, human-readable labeling, and the reason-code
+lookup table) in progress.
