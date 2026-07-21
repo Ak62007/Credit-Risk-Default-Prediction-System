@@ -391,6 +391,7 @@ name = "credit-risk"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "ipython" },
     { name = "ipywidgets" },
     { name = "jupyterlab" },
@@ -404,6 +405,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pip" },
     { name = "pyarrow" },
+    { name = "pydantic" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "ruff" },
@@ -412,11 +414,13 @@ dependencies = [
     { name = "torch" },
     { name = "tqdm" },
     { name = "typer" },
+    { name = "uvicorn" },
     { name = "xgboost" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.139.0" },
     { name = "ipython" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupyterlab" },
@@ -430,6 +434,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pip" },
     { name = "pyarrow", specifier = ">=24.0.0" },
+    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "ruff" },
@@ -438,6 +443,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.12.1" },
     { name = "tqdm" },
     { name = "typer" },
+    { name = "uvicorn", specifier = ">=0.50.2" },
     { name = "xgboost", specifier = ">=3.2.0" },
 ]
 

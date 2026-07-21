@@ -1415,3 +1415,110 @@ codes rather than confusing per-dummy entries.
 **Status:** explainer construction and verification complete; integration into
 `predict_one` (aggregation, ranking, human-readable labeling, and the reason-code
 lookup table) in progress.
+
+---
+
+## M15: FastAPI inference service
+
+Productionized `predict.py` (previously an unmodified cookiecutter stub —
+all real modeling work through M14 lived in notebooks) and built the
+FastAPI serving layer around the tuned XGBoost model selected in M13.
+
+### `predict_one()` design
+
+Reused `features.py`'s feature-engineering functions (`add_credit_yrs`,
+`add_fico_mid`, `drop_columns`) directly rather than duplicating logic in
+the serving path — one shared code path for training and inference,
+rather than the two-pipeline pattern that's a common source of
+training-serving skew.
+
+**Training-serving skew, handled explicitly:** `issue_d` was a historical
+fact in training data; at inference time a loan hasn't been issued yet.
+`predict_one` sets `issue_d` to the request's own timestamp on the
+constructed DataFrame (not on the caller's input dict, to avoid mutating
+it) before running `add_credit_yrs`.
+
+**Reason codes via SHAP (`TreeExplainer`).** New dependency — correcting
+the original plan, which mentioned SHAP at M7 but never actually
+installed or used it. Key design point: XGBoost's raw output is
+log-odds/margin space (a sum of tree outputs); SHAP's additivity
+property (`base_value + sum(shap_values) = raw margin output`) is exact
+in that space but does not hold if individual SHAP values are converted
+to probability and summed separately. Reason codes are therefore based
+on the sign and relative ranking of SHAP values, not on a claimed fixed
+"N probability points" per feature — the real-world probability impact
+of a given log-odds contribution depends on where a specific applicant's
+baseline sits (sigmoid's slope is `p(1-p)`, steepest near 50%, flattest
+near the tails).
+
+One-hot categorical handling: the preprocessor's dummy columns
+(`cat__term_ 36 months`, `cat__term_ 60 months`, etc.) are aggregated
+back to their parent feature by summing their SHAP values — verified
+this recovers the correct combined contribution (e.g. `term`'s two
+dummies summed to its total effect) before trusting it for reason codes.
+
+**Verification before integration.** Two rows manually checked: one
+low-risk (val set), one confirmed default (target=1). Additivity
+confirmed to float32 precision (~1.5e-6) on both. Base value, converted
+via sigmoid, landed at 16.64% against a training default rate of 16.65%.
+Top contributing features matched domain expectations on both — solid
+income/FICO/DTI with loan term as the one risk factor on the low-risk
+row; recent account openings, recent trade lines opened, and elevated
+DTI (the well-established "recent credit-seeking + high leverage"
+default pattern) on the defaulted row.
+
+### `train.py` — deliberately deferred
+
+Left as the untouched stub. Its real design depends on unresolved
+questions belonging to a future auto-retraining milestone (where
+incoming/retraining data will be sourced from), so building it now would
+mean guessing at requirements. Revisit alongside that milestone.
+
+### Imputation strategy reconsidered, then confirmed as-is
+
+Raised the question of whether median-imputing the `mths_since_*` family
+(months since last delinquency, etc.) was a mistake, since null in these
+columns is documented as informative ("never happened"), not missing at
+random. Checked against Pass-2 feature engineering (see above): this
+exact hypothesis — missingness indicators for the `mths_since_*` family
+— was already tested against LR/RF/XGB and found **Flat**, consistent
+with the broader Pass-2 finding that the ~0.30 PR-AUC ceiling is a
+property of the data, not feature representation. Decision: leave the
+current pipeline as-is rather than reopen it mid-M15; revisiting it
+would require rebuilding features and retraining the model this
+milestone is actively serving.
+
+### API schema design
+
+Input fields split into three groups: fields the model uses directly,
+fields supplied only to derive engineered features (`earliest_cr_line`,
+`fico_range_low`/`fico_range_high`), and fields never accepted from the
+caller because they're computed internally (`credit_age_yrs`,
+`fico_mid`). Categorical fields use `Literal` types validated against
+the fitted encoder's actual categories. The seven columns with
+genuinely informative nulls use `float | None` (not bare `float` with a
+default) — a bare-`float` field with `default=None` only covers an
+*omitted* key, not an explicit JSON `null`, which a real client is
+likely to send for a field it knows is often empty.
+
+### Bugs found during integration (real, not hypothetical)
+
+| Bug | Symptom | Fix |
+|-----|---------|-----|
+| `get_feature_names_out()` called on the classifier instead of the preprocessor | Wrong/inconsistent with rest of file | Called on `model[0]`, not `model[1]` |
+| SHAP aggregation treated a long-format table (`feature`/`shap_value` columns) as if wide | `KeyError` on aggregation | Filter rows via `.isin()`, not column indexing |
+| New aggregate row appended via `len(df)` as index label | Silent overwrite risk after first row-drop breaks index contiguity | `pd.concat(..., ignore_index=True)` instead |
+| `datetime.date` (from Pydantic) vs `datetime64` (from `pd.Timestamp.now()`) | `TypeError: unsupported operand type(s) for -` | Explicit `pd.to_datetime()` coercion, reassigned back to the column |
+| `drop_columns()`'s default `DROP_COLS` assumes the full raw-CSV column set; the API's request schema only ever supplies the fields already scoped to bucket 1/2 | `KeyError`, "not found in axis" | Removed the call from `predict_one` entirely — preprocessor's `remainder='drop'` already ignores anything not in `NUMERICAL_COLS`/`CATEGORICAL_COLS` |
+| `response_model=RequestModel` (should be `ResponseModel`) in the route decorator | `ResponseValidationError`, ~59 spurious "field required" errors | Corrected to `response_model=ResponseModel` |
+
+### Smoke test
+
+Verified: valid request returns correct probability/decision/reason
+codes matching hand-verified SHAP values; missing required field → 422;
+wrong type → 422; omitted optional field → defaults to `None`
+correctly; explicit JSON `null` for a nullable field → accepted
+correctly; a literal string `"None"` (not JSON `null`) → correctly
+rejected, confirming Pydantic distinguishes JSON's `null` from an
+ordinary string that happens to spell the word.
+

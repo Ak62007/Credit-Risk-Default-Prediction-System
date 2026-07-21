@@ -50,11 +50,11 @@ def predict_one(raw_input: dict) -> tuple[int, float, dict]:
     """
     logger.info("Adding the transformed features...")
     df = pd.DataFrame.from_records([raw_input])
+    df['earliest_cr_line'] = pd.to_datetime(df['earliest_cr_line'])
     logger.info("Adding the issue date as now...")
     df['issue_d'] = pd.Timestamp.now()
     df = add_credit_yrs(df)
     df = add_fico_mid(df)
-    df = drop_columns(df)
     logger.info("Successfully added!")
     
     
@@ -82,6 +82,7 @@ def predict_one(raw_input: dict) -> tuple[int, float, dict]:
     shap_df = shap_df.sort_values('shap_value', key=abs, ascending=False)
         
     reason_codes = {row.feature : row.shap_value for row in shap_df.head().itertuples(index=False)}
+    logger.info("Reason Codes Created successfully!")
     
     return (prediction, float(prob[0]), reason_codes)
 

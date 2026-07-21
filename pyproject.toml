@@ -16,6 +16,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License"
 ]
 dependencies = [
+    "fastapi>=0.139.0",
     "ipython",
     "ipywidgets>=8.1.8",
     "jupyterlab",
@@ -29,6 +30,7 @@ dependencies = [
     "pandas",
     "pip",
     "pyarrow>=24.0.0",
+    "pydantic>=2.13.4",
     "pytest",
     "python-dotenv",
     "ruff",
@@ -37,6 +39,7 @@ dependencies = [
     "torch>=2.12.1",
     "tqdm",
     "typer",
+    "uvicorn>=0.50.2",
     "xgboost>=3.2.0",
 ]
 requires-python = "~=3.11.0"
