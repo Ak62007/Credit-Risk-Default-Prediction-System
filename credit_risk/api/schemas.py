@@ -419,7 +419,9 @@ class ResponseModel(BaseModel):
     
     prob: float = Field(
         ...,
-        description="Predicted probability of default"
+        description="Predicted probability of default",
+        ge=0.0,
+        le=1.0
     )
     
     reason_codes: dict[str, float] = Field(

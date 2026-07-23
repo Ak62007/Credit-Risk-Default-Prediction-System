@@ -1,5 +1,4 @@
 import pytest
-import pandas as pd
 
 @pytest.mark.parametrize('split_name', ['train', 'val', 'test'])
 def test_dti_extreme_outliers_below_threshold(split_name, splits):
