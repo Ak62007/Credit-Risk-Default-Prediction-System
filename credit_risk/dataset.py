@@ -139,7 +139,7 @@ def apply_observation_window(
     loan_age_months = ss_date.to_period('M').ordinal - data['issue_d'].dt.to_period('M').astype(int)
     filtered_idx = loan_age_months[loan_age_months >= W].index
     
-    logger.info(f"Output: After filtering {len(data.loc[filtered_idx])} and {data.shape[1]} columns survived!")
+    logger.info(f"Output: After filtering {len(data.loc[filtered_idx])} rows and {data.shape[1]} columns survived!")
     
     return data.loc[filtered_idx]
 
