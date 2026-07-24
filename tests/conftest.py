@@ -93,7 +93,7 @@ def raw_input():
         "total_bal_ex_mort": 22000,
         "total_bc_limit": 10000,
         "total_il_high_credit_limit": 15000,
-        "earliest_cr_line": "1998-03-01",
+        "earliest_cr_line": date(1998, 3, 1),
         "fico_range_low": 660,
         "fico_range_high": 664,
         "term": " 36 months",
