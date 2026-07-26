@@ -16,6 +16,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License"
 ]
 dependencies = [
+    "boto3>=1.43.56",
     "fastapi>=0.139.0",
     "ipython",
     "ipywidgets>=8.1.8",
