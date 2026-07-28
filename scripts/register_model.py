@@ -2,8 +2,9 @@ import mlflow
 import mlflow.pyfunc
 from mlflow import MlflowClient
 import joblib
+from dotenv import load_dotenv
+load_dotenv()
 
-mlflow.set_tracking_uri("sqlite:///mlflow.db")
 
 experiment_name = "production_model_storage"
 experiment = mlflow.get_experiment_by_name(experiment_name)

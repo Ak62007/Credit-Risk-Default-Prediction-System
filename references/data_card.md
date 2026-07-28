@@ -1522,3 +1522,15 @@ correctly; a literal string `"None"` (not JSON `null`) → correctly
 rejected, confirming Pydantic distinguishes JSON's `null` from an
 ordinary string that happens to spell the word.
 
+---
+
+**Security trade-off: MLflow tracking server network access**
+
+The EC2 instance hosting the MLflow tracking server has its security group configured to allow inbound traffic on port 5000 from anywhere (`0.0.0.0/0`), rather than being restricted to GitHub Actions' published runner IP ranges. This was a deliberate, considered trade-off rather than an oversight.
+
+The more precise fix — restricting the security group to GitHub's published CIDR blocks — is impractical to maintain by hand: GitHub publishes several dozen IP ranges for its hosted runners, not one or two, so implementing this properly would require scripting the security group rules via the AWS CLI rather than the console, and re-syncing them if GitHub rotates its ranges.
+
+Instead, the server is protected at the application layer: MLflow's basic HTTP authentication is enabled, the default admin credentials were changed immediately after setup, and CI uses a separate, least-privilege user (`ci-bot`, read-only permission) rather than the admin account — so a leaked CI secret has limited blast radius, and unauthenticated requests are rejected outright regardless of network-level access.
+
+Accepted residual risk: MLflow's basic-auth has no built-in rate limiting on login attempts, and the server remains reachable (though not usable without credentials) by anyone on the internet. This is judged acceptable for this project's threat model — a portfolio/learning system with no real financial data at stake — but would need the IP-range restriction (or a proper VPN/bastion setup) before being appropriate for a real production deployment.
+
