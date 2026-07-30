@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field
-from typing import Literal
 from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
 
 class RequestModel(BaseModel):
     loan_amnt: float = Field(

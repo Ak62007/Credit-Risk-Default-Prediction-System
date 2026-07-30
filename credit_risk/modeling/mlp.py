@@ -1,7 +1,8 @@
+from typing import Union
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from typing import Union
 from torch.utils.data import DataLoader, TensorDataset
 
 

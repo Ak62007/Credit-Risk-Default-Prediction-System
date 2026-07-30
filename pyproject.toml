@@ -18,33 +18,37 @@ classifiers = [
 dependencies = [
     "boto3>=1.43.56",
     "fastapi>=0.139.0",
-    "ipython",
-    "ipywidgets>=8.1.8",
-    "jupyterlab",
-    "kaggle>=2.1.2",
     "loguru",
-    "matplotlib",
     "mlflow>=3.14.0",
-    "notebook",
     "numpy",
-    "optuna>=4.9.0",
     "pandas",
-    "pip",
-    "pyarrow>=24.0.0",
     "pydantic>=2.13.4",
     "pytest",
     "python-dotenv",
-    "ruff",
     "scikit-learn",
     "shap>=0.51.0",
-    "torch>=2.12.1",
     "tqdm",
     "typer",
     "uvicorn>=0.50.2",
     "xgboost>=3.2.0",
+    "joblib",
 ]
 requires-python = "~=3.11.0"
 
+[dependency-groups]
+dev = [
+    "ipython",
+    "ipywidgets>=8.1.8",
+    "jupyterlab",
+    "kaggle>=2.1.2",
+    "matplotlib",
+    "notebook",
+    "optuna>=4.9.0",
+    "pip",
+    "pyarrow>=24.0.0",
+    "ruff",
+    "torch>=2.12.1",
+]
 
 [tool.ruff]
 line-length = 99

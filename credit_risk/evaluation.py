@@ -1,12 +1,13 @@
-import numpy as np
 from typing import Any
+
+import numpy as np
 from sklearn.metrics import (
-    roc_auc_score,
+    average_precision_score,
+    brier_score_loss,
     confusion_matrix,
     precision_score,
     recall_score,
-    average_precision_score,
-    brier_score_loss
+    roc_auc_score,
 )
 
 

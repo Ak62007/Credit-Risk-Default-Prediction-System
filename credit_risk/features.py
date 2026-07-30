@@ -1,16 +1,13 @@
-import joblib
-import pytest
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-
 from pathlib import Path
 
+import joblib
 from loguru import logger
-from tqdm import tqdm
+import pandas as pd
+import pytest
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 import typer
 
 from credit_risk.config import PROCESSED_DATA_DIR
@@ -202,7 +199,7 @@ def create_pipeline() -> tuple[Pipeline, Pipeline]:
 def building_preprocessor(num_pipeline: Pipeline, cat_pipeline: Pipeline) -> ColumnTransformer:
     """Building the complete preprocessor using the pipelines"""
     logger.info(f'Inside Function: {building_preprocessor.__name__}')
-    logger.info(f"creating the preprocessor...")
+    logger.info("creating the preprocessor...")
     
     preprocessor = ColumnTransformer([
         ('num', num_pipeline, NUMERICAL_COLS),
@@ -227,7 +224,7 @@ def building_features(input_path: Path = AFTER_EDA, output_path: Path = FEATURES
     """Complete feature creation pipeline in one function"""
     logger.info(f'Inside Function: {building_features.__name__}')
     train_df, val_df, test_df, _ = load_splits(path=input_path)
-    logger.info(f"processing all the splits and saving them...")
+    logger.info("processing all the splits and saving them...")
     
     train_feat, y_train = prep_one_split(train_df, drop_cols=drop_cols)
     val_feat, y_val = prep_one_split(val_df, drop_cols=drop_cols)

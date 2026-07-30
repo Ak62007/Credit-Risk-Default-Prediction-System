@@ -1,13 +1,11 @@
-import json
-import pytest
-import pandas as pd
-import numpy as np
 from datetime import datetime
-
+import json
 from pathlib import Path
 
 from loguru import logger
-from tqdm import tqdm
+import numpy as np
+import pandas as pd
+import pytest
 import typer
 
 from credit_risk.config import PROCESSED_DATA_DIR, RAW_DATA_DIR

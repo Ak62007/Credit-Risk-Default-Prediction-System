@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
+
 from credit_risk.api.schemas import RequestModel, ResponseModel
 from credit_risk.modeling.predict import predict_one
-
 
 app = FastAPI(title="Credit Risk Default Prediction API")
 

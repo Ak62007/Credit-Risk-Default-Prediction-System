@@ -1,15 +1,15 @@
+import json
 from pathlib import Path
 
-from loguru import logger
-import pandas as pd
-import numpy as np
 import joblib
-import typer
-import json
+from loguru import logger
+import numpy as np
+import pandas as pd
 import shap
+import typer
 
 from credit_risk.config import MODELS_DIR, PROCESSED_DATA_DIR
-from credit_risk.features import add_credit_yrs, add_fico_mid, drop_columns, CATEGORICAL_COLS
+from credit_risk.features import CATEGORICAL_COLS, add_credit_yrs, add_fico_mid
 
 app = typer.Typer()
 
@@ -26,7 +26,7 @@ CAT_TO_ONEHOT = {}
 for col in CATEGORICAL_COLS:
     CAT_TO_ONEHOT[col] = [onehot for onehot in features_name if onehot.startswith(f"cat__{col}_")]
     
-logger.info(f"CAT_TO_ONEHOT map built successfully!")
+logger.info("CAT_TO_ONEHOT map built successfully!")
 
 logger.info("Creating the SHAP Explainer...")
 explainer = shap.TreeExplainer(model=model[1])

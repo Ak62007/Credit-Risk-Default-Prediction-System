@@ -196,3 +196,4 @@ models/
 # mlflow
 mlflow.db
 mlartifacts/
+.claude/

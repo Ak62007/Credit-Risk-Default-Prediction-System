@@ -1,8 +1,10 @@
-import numpy as np
 from typing import Literal
-from sklearn.linear_model import LogisticRegression
+
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
+
 
 def to_jsonable(metrics: dict) -> dict:
     out = {}
