@@ -1534,3 +1534,206 @@ Instead, the server is protected at the application layer: MLflow's basic HTTP a
 
 Accepted residual risk: MLflow's basic-auth has no built-in rate limiting on login attempts, and the server remains reachable (though not usable without credentials) by anyone on the internet. This is judged acceptable for this project's threat model — a portfolio/learning system with no real financial data at stake — but would need the IP-range restriction (or a proper VPN/bastion setup) before being appropriate for a real production deployment.
 
+---
+
+## M17: Dockerize
+
+Packaged the FastAPI serving app into a self-contained Docker image. The
+central design decision: fetch the production model from MLflow/S3 at
+**build time** (baked into the image) rather than at container-start
+time. Reasoning: the deciding factor is how often the model actually
+changes relative to how much reproducibility/immutability matters — this
+project's model is deliberately, rarely promoted, so an immutable image
+that doesn't depend on the MLflow server being reachable at every
+container start is the better fit. Idea captured for later (not built):
+when the auto-retraining stretch milestone lands, MLflow webhooks →
+GitHub Actions `repository_dispatch` could rebuild/redeploy the image
+automatically when a new model is promoted.
+
+### Secrets handling
+
+`fetch_model.py` needs five credentials (MLflow URI/username/password,
+AWS access key/secret) to run during the build. Used Docker BuildKit
+secret mounts (`RUN --mount=type=secret,id=X`), not `--build-arg` —
+build-args get permanently recorded in image layer history (inspectable
+via `docker history`), which would have undone the M16 least-privilege
+`ci-bot` design. Secret-mounted values are written to a temporary
+`/run/secrets/<id>` file, available only for the duration of that one
+`RUN` instruction, never persisted to any layer.
+
+### `uv run` auto-sync bug (hit twice)
+
+`uv run <command>`, used bare, checks whether the environment matches a
+full default `uv sync` and silently re-syncs if not — fine for local
+dev, wrong inside a built image. Surfaced twice: in the final `CMD`
+(re-syncing on every container start) and, more subtly, in the
+model-fetch `RUN` step once dependency groups were split (below) — a
+bare `uv run scripts/fetch_model.py` detected the deliberately-excluded
+`dev` group as "missing" and reinstalled it mid-build, silently
+reinflating the image. Both fixed with `uv run --no-sync`.
+
+### Dependency-group split (image size)
+
+Used PEP 735 `[dependency-groups]` to separate serving-time packages
+from training/notebook/dev-only ones (`torch`, `jupyterlab`, `notebook`,
+`ipywidgets`, `ipython`, `kaggle`, `optuna`, `matplotlib`, `ruff`,
+`pyarrow`, `pip` moved to a `dev` group). Classification method: grepped
+actual imports across the real serving path (`main.py` → `schemas.py` →
+`predict.py` → `features.py` → `config.py`), which caught two
+non-obvious cases a naive grep would miss:
+
+- `xgboost`/`scikit-learn` are never directly imported by `predict.py`,
+  but are required because `joblib.load()` unpickles actual
+  `XGBClassifier`/`ColumnTransformer` objects — un-pickling needs the
+  class definitions importable even without a source-level `import`.
+- `pytest`/`tqdm` turned out to be transitively required for serving:
+  `features.py` imports from `dataset.py`, and `dataset.py` imports both
+  at module level, so importing `credit_risk.features` executes
+  `dataset.py`'s imports too. Accepted for now rather than refactoring
+  the `features.py`/`dataset.py` coupling mid-milestone — flagged as a
+  known wart for later.
+
+`joblib` was also added as an explicit dependency — it was being used
+directly (`predict.py`) but only present as an unlisted transitive
+dependency of `scikit-learn`, which is fragile.
+
+A real gotcha: a group literally named `dev` installs *by default* on
+any `uv sync` unless `--no-dev` is passed — this had to be added to
+**both** `uv sync` calls in the Dockerfile, not just the second, since
+Docker layers are append-only (installing something in one layer and
+removing it in a later layer doesn't shrink the image; the original
+bytes stay baked in).
+
+**Result: image size 10.6GB → 2.63GB** (content size 3.72GB → 781MB).
+Verified functionally identical: re-ran the same `/predict` test payload
+after the cleanup and got byte-identical output (`pred`, `prob`, all
+five SHAP reason codes) to the pre-cleanup run.
+
+`mlflow`/`boto3` are needed only at build time (by `fetch_model.py`),
+never at runtime, but were deliberately left in the final image as an
+accepted trade-off — the fully thorough fix (a Docker multi-stage build)
+was scoped out of M17 as a future optimization.
+
+### `PYTHONUNBUFFERED`
+
+Added after noticing model-load log lines only appeared in `docker run`
+output on container shutdown, not in real time — Python block-buffers
+stdout when it isn't attached to a TTY, which is always true inside a
+container. `ENV PYTHONUNBUFFERED=1` forces immediate flushing.
+
+### Implications for downstream milestones
+
+- **M18 (load testing):** ran directly against this image.
+- **Future optimization (not scheduled):** a multi-stage build could
+  remove `mlflow`/`boto3` from the final image entirely, and the
+  `features.py`/`dataset.py` coupling could be refactored to stop
+  pulling `pytest`/`tqdm` into the serving image as a side effect.
+- **Future auto-retraining milestone:** MLflow webhook → GitHub Actions
+  `repository_dispatch` → rebuild/redeploy, as genuine event-driven
+  CI/CD, rather than manual rebuilds.
+
+---
+
+## M18: Load testing (Locust)
+
+Load tested the M17 Docker image locally (`docker run -p 8000:8000`)
+against `/predict`, using Locust. This connects directly to a note
+already on record from M13's latency methodology section: *"micro-
+batching would substantially improve throughput under load"* — M18
+investigates the throughput question empirically rather than leaving it
+as a prediction.
+
+### Methodology
+
+Stepped simulated load up deliberately (1 → 20 → 100 → 500 → 1000
+users) rather than jumping to a large number immediately, specifically
+to distinguish a plateau caused by the *test's own design* from one
+caused by genuine *server* saturation. With `wait_time = between(1, 3)`
+(≈2s average), naive expected demand is `users × 0.5 req/s`. At 20 and
+100 users, observed RPS matched that naive prediction almost exactly —
+confirming the server wasn't near its limit yet, only the test's own
+demand ceiling had been found. The real ceiling only appeared at
+500-1000 users.
+
+### Finding: throughput ceiling and the failure-rate blind spot
+
+At 1000 users, RPS flattened at **~95-105** regardless of how much more
+demand was added, while median latency rose from ~22ms (100 users,
+healthy) → 2,900ms (500 users) → **8,400ms** (1000 users). **Failure
+rate stayed at a flat 0% throughout.**
+
+This is a concrete, empirically-observed instance of a general
+principle worth internalizing: a system can look perfectly healthy on
+an error-rate/uptime dashboard while every request is actually queueing
+for 8+ seconds. The container doesn't reject excess load — it queues
+requests indefinitely and eventually processes all of them, which
+avoids ever "failing" a request while still delivering an unacceptable
+experience. Tail latency (p95/p99), not failure rate, was the metric
+that actually revealed the problem.
+
+### Root cause, diagnosed via `docker stats` (not guessed)
+
+Container CPU was pinned at a consistent **~190%** (≈2 cores) regardless
+of load level — same reading at 500 users and at 1000 users, ruling out
+"just needs more load to show the ceiling" and confirming a genuine
+compute ceiling rather than e.g. Locust itself being the bottleneck.
+
+Explanation: the Dockerfile's `CMD` ran Uvicorn with no `--workers` flag
+(defaults to 1 process). The ~190% CPU on a *single* worker was
+intra-request parallelism only — NumPy/XGBoost's internal native
+threading briefly using 2 cores for one request's own math — not
+inter-request concurrency. Python's GIL still serializes the actual
+request orchestration (DataFrame construction, the SHAP call, JSON
+response) to one request at a time within a single process, so once
+arrival rate exceeds that single process's drain rate, a queue forms
+and grows without bound.
+
+### Fix, applied and empirically verified
+
+Checked Docker Desktop's own CPU allocation first (10 cores / 7.9GB) —
+confirmed Docker itself was never the constraint; there was headroom
+the entire time. Added `--workers 5` to the Uvicorn `CMD` (spawns 5
+independent OS processes, each with its own interpreter/GIL/model copy,
+load-balanced by Uvicorn's built-in process manager). Rebuilt, re-ran
+the identical 1000-user/50-ramp test:
+
+| Metric | 1 worker | 5 workers |
+|---|---|---|
+| RPS ceiling | ~95-100 | ~200-230 |
+| Median latency | 8,400ms | 2,400ms |
+| p95 | 8,800ms | 3,900ms |
+| p99 | 8,900ms | 4,300ms |
+| Failures | 0% | 0% |
+
+Throughput roughly doubled; median latency dropped ~3.5x. Not a clean
+5x improvement, explained with the data already in hand: 5 workers × ~2
+cores each (from the `docker stats` finding) ≈ 10 cores of peak
+simultaneous demand — landing right at Docker's own 10-core ceiling, so
+workers start contending with each other once all are busy
+simultaneously. Compounded by Locust itself competing for the same
+physical laptop CPU as the Docker VM, since this is still a local test.
+
+### Decision: reverted `--workers 5`
+
+The tuned value (5) was fit to a 10-core development laptop, not a real
+deployment target. Planned deployment is a cheap/small EC2 instance
+(fewer cores), so `CMD` was reverted to the plain default (no explicit
+`--workers`) rather than shipping a number known to be wrong for the
+eventual target. **This load-testing exercise should be re-run against
+whatever EC2 instance type is actually chosen** once a deployment
+milestone happens — the correct worker count is a property of the
+deployment target's core count, not a fixed constant.
+
+### Implications for downstream milestones
+
+- **Future deployment milestone:** re-run this exact Locust test against
+  the real target instance to pick an appropriately-sized `--workers`
+  value, rather than reusing 5 or 1 by default.
+- **M13's latency note, now confirmed empirically:** micro-batching
+  remains a second, untried lever (distinct from `--workers`) that could
+  further improve throughput — not pursued in M18, worth considering
+  alongside worker-count tuning in a future capacity-planning pass.
+- **M19 (drift detection) / future monitoring:** current single-instance
+  design has a known, now-quantified capacity ceiling; if
+  drift-triggered retraining + redeployment is ever built, capacity
+  planning should account for this rather than assume infinite headroom.

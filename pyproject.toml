@@ -41,6 +41,7 @@ dev = [
     "ipywidgets>=8.1.8",
     "jupyterlab",
     "kaggle>=2.1.2",
+    "locust>=2.46.2",
     "matplotlib",
     "notebook",
     "optuna>=4.9.0",
