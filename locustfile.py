@@ -3,7 +3,7 @@ from pathlib import Path
 from locust import HttpUser, between, task
 
 # loading the payload
-cwd = Path.cwd()
+cwd = Path(__file__).parent
 
 with open(cwd / 'test_payload.json', 'r') as f:
     payload = json.load(f)
