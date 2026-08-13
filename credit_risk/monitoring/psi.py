@@ -1,11 +1,11 @@
-import typer
+from loguru import logger
 import numpy as np
 import pandas as pd
-from loguru import logger
+import typer
 
-from credit_risk.features import CATEGORICAL_COLS, NUMERICAL_COLS, prep_one_split
 from credit_risk.config import REPORTS_DIR
-from credit_risk.dataset import load_splits, AFTER_EDA
+from credit_risk.dataset import AFTER_EDA, load_splits
+from credit_risk.features import CATEGORICAL_COLS, NUMERICAL_COLS, prep_one_split
 
 app = typer.Typer()
 
