@@ -1,10 +1,8 @@
-import pandas as pd
 import numpy as np
-from credit_risk.features import (
-    NUMERICAL_COLS,
-    CATEGORICAL_COLS,
-    prep_one_split
-)
+import pandas as pd
+
+from credit_risk.features import CATEGORICAL_COLS, NUMERICAL_COLS, prep_one_split
+
 
 def psi_numeric(reference: pd.Series, target: pd.Series, bins=10) -> float:
     """Calculates the psi drift metric for a given feature
