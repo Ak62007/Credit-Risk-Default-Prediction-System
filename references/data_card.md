@@ -1737,3 +1737,162 @@ deployment target's core count, not a fixed constant.
   design has a known, now-quantified capacity ceiling; if
   drift-triggered retraining + redeployment is ever built, capacity
   planning should account for this rather than assume infinite headroom.
+
+---
+
+## M19: Monitoring — PSI drift detector
+
+Built a label-free covariate-shift monitor using the Population Stability
+Index (PSI), covering every feature the model actually consumes
+(`NUMERICAL_COLS` + `CATEGORICAL_COLS` from `features.py`, 65 features
+total). This connects directly to the ~24-month label-maturity lag
+established in M11's stretch-goal discussion: since matured ground truth
+isn't available on any useful cadence, drift detection has to work off
+input-feature distributions alone, not accuracy or calibration metrics.
+PSI is the industry-standard tool for exactly this in credit risk/banking
+— not a technique covered by name in DMLS ch.8 itself (that chapter's
+own two-sample tests are KS test and MMD), but conceptually the same
+job: detecting covariate shift, P(X) changing while P(Y|X) stays fixed.
+
+### Design decisions
+
+**Reference vs. target.** No live traffic exists yet, so the train split
+(2007–2014) serves as the reference distribution, with val (2015) and
+test (2016) as two independent target snapshots — not synthetic
+comparisons, since the project's own EDA already documented real,
+if gentle, temporal drift across this exact window.
+
+**Scope: all 65 features, not a hand-picked watchlist.** Originally
+scoped to a narrow 5-feature watchlist (fairness proxies + credit-cycle
+features) specifically to avoid the alert-fatigue problem DMLS ch.8
+warns about. Revisited once it became clear this isn't a live,
+continuously-running system — there's no latency cost or paging burden
+to running PSI on every feature. Alert fatigue is instead addressed at
+the *reporting* layer: the report includes a summary view (counts per
+severity level, flagged features sorted by PSI descending) rather than
+requiring a human to scan 65 raw rows. This is the same lesson DMLS
+teaches, just applied at a different layer than originally planned.
+
+**PSI mechanics.** Reference-only quantile binning (10 bins via
+`np.nanquantile`), outer bin edges extended to `±inf` so out-of-range
+target values don't silently drop to `NaN`, `duplicates='drop'` to
+handle zero-inflated/discrete features (several `NUMERICAL_COLS` are
+mostly-zero count fields), and an epsilon floor (`1e-4`) before the
+log/division step to avoid blowing up on empty bins.
+
+**Missingness as an explicit, separately-normalized bucket.** Rather
+than silently excluding `NaN` rows (which would make missingness-rate
+shifts invisible), both `psi_numeric` and `psi_categorical` compute a
+dedicated `'missing'` bucket, with every bucket normalized against the
+*true* row count (missing values included) so percentages stay
+consistent. This ended up being the single most consequential design
+choice in the milestone — see Finding 1 below.
+
+**Categorical unseen-category handling.** The category vocabulary is
+fixed from the reference split only, mirroring how the actual
+`OneHotEncoder(handle_unknown='ignore')` in `features.py` already
+behaves at serving time. Any target-side category absent from that
+vocabulary is pooled into a synthetic `'unseen_category'` bucket. A
+reference category that happens to have zero rows in target needs no
+special handling — it's naturally captured by reindexing target against
+reference's fixed vocabulary with `fill_value=0`.
+
+**Known limitation: `application_type` can't be monitored this way.**
+`application_type` is dropped in `features.py`'s `DROP_COLS` before the
+model ever sees it (it was ~constant in training — see the M10 finding
+below). Because PSI here only covers the model's actual input space, it
+structurally cannot re-detect a repeat of the M10 Joint-application
+failure mode; that signal was engineered out upstream. Worth carrying
+into the M22 "what didn't work" retrospective as an honest scope
+limitation rather than an oversight.
+
+**Reusability for M20.** `build_drift_report(reference_df, target_df,
+target_label)` takes generic DataFrames — it has no hardcoded knowledge
+of "val" or "test." The one function that's actually specific to today's
+data (`run_drift_check_on_splits`, which loads the historical splits) is
+kept deliberately concrete rather than speculatively generalized, since
+M20's real logging schema doesn't exist yet to design against. When it
+does, M20 will need a new, small orchestration function that loads
+logged requests instead of `load_splits()` — but it'll call the exact
+same `build_drift_report()` already built here.
+
+### Finding 1: a data-collection schema change, distinct from the
+already-documented policy-tightening drift
+
+21 of the 33 features flagged `"significant"` in the val comparison
+trace back to one shared root cause: a cluster of secondary
+credit-bureau fields (`num_tl_op_past_12m`, `total_il_high_credit_limit`,
+`num_bc_tl`, `total_rev_hi_lim`, `pct_tl_nvr_dlq`, and others) show
+**~15% missing in train, ~0% missing in val and test.** This strongly
+suggests LendingClub began collecting these fields partway through the
+2007–2014 training window — a portion of the earliest loans simply
+predate their existence — while by 2015 they're collected on every
+application. This is a *different kind* of drift than the policy-driven
+one already noted elsewhere in this data card: a data-collection/schema
+change, not a shift in who's applying or how they're scored. It was only
+catchable because of the explicit missingness-bucket design above — a
+naive PSI implementation comparing only non-null values would have
+missed it completely.
+
+Interpretive caveat worth stating plainly: these features already go
+through `SimpleImputer(strategy='median')` before reaching the model, so
+a PSI flag here doesn't automatically mean model performance degraded —
+it means the *input population's missingness pattern* genuinely
+changed. Whether that has real downstream effect on calibration is an
+open question, not yet checked with a segmented analysis the way M10
+did for `application_type`.
+
+Same pattern holds in the test comparison too (identical 33/1/31 flag
+counts to val) — this isn't a one-off artifact of a single split.
+
+### Finding 2: the other 12 significant features are a distinct signal
+
+The remaining 12 features flagged significant in val (`dti`'s
+`0.056` is closer to the threshold; several others are much larger) are
+*not* explained by the missingness pattern above and haven't yet been
+individually investigated — flagged here as a concrete follow-up rather
+than left implicit.
+
+### Finding 3: `addr_state` surfaced a genuinely new category
+
+`addr_state` (train vs. val) included one category, `'ND'` (North
+Dakota), present in target but entirely absent from reference — caught
+automatically via the unseen-category logging added to `psi_categorical`.
+A small, concrete, real example of the exact mechanism this detector
+exists to catch, distinct from the missingness story.
+
+### Testing
+
+12 unit tests in `tests/test_psi.py`, synthetic-fixture-based (no real
+data needed), covering: identity (`PSI(x, x) == 0`) for both numeric and
+categorical; a clearly-shifted synthetic pair; a missingness-only shift
+(same values, different `NaN` rates) for both numeric and categorical;
+a zero-inflated/duplicate-edge numeric feature not crashing; the `bins`
+parameter actually changing output; a genuinely new category and a
+vanishing reference category for the categorical function; and boundary
+checks for `flag_level`'s three severity tiers. All passing.
+
+### Artifact
+
+`reports/drift/drift_report.csv` — 130 rows (65 features × two
+comparisons), columns `feature`, `PSI`, `drift_level`, `target_label`.
+Generated via `python -m credit_risk.monitoring.psi` (a single-command
+Typer app, matching `dataset.py`/`features.py`'s existing CLI pattern).
+
+### Implications for downstream milestones
+
+- **M20 (prediction logging + dashboard):** `build_drift_report()`'s
+  generic signature extends directly to real logged serving requests
+  once that data exists — no rewrite needed, only a new loader.
+- **M20 dashboard scope:** the 12 unexplained significant features
+  (Finding 2) and the missingness-cluster story (Finding 1) are both
+  good candidates for surfacing explicitly, not just a raw PSI table.
+- **M22 (retrospective):** the `application_type` limitation is worth
+  an honest mention — this detector monitors the model's actual input
+  space, which by design excludes a feature already known to matter for
+  a real, documented failure mode (M10).
+- **Future auto-retraining stretch milestone:** this detector remains
+  deliberately *not* wired to trigger retraining automatically — same
+  reasoning already on record elsewhere in this data card: drift
+  detection needs no labels, retraining needs matured ones, and
+  conflating the two ignores the ~24-month label-maturity lag.
