@@ -1,22 +1,22 @@
 import os
 import socket
-
+import psycopg2
 from loguru import logger
-from psycopg2.extensions import parse_dsn
 from psycopg2.extras import Json
+from psycopg2.extensions import parse_dsn
 from psycopg2.pool import ThreadedConnectionPool
-
 from credit_risk.api.schemas import RequestModel
 
-conn_str = os.getenv("PREDICTION_LOGS_DB_URI")
-host = parse_dsn(conn_str)["host"]
-ipv4 = socket.gethostbyname(host)
-conn_str_with_hostaddr = conn_str + f" hostaddr={ipv4}"
-
 try:
+    conn_str = os.getenv("PREDICTION_LOGS_DB_URI")
+    host = parse_dsn(conn_str)["host"]
+    ipv4 = socket.gethostbyname(host)
+    conn_str_with_hostaddr = conn_str + f" hostaddr={ipv4}"
     pool = ThreadedConnectionPool(minconn=1, maxconn=5, dsn=conn_str_with_hostaddr)
 except Exception as e:
-    logger.error(f"Failed to create prediction_logs connection pool: {e}")
+    logger.error(
+        f"Failed to create prediction_logs connection pool or failed to get the PREDICTION_LOGS_DB_URI env var: {e}"
+    )
     pool = None
 
 RAW_INPUT_COLUMNS = [
@@ -103,6 +103,7 @@ def log_predictions(
     """
     if pool is None:
         raise RuntimeError("Prediction log DB pool is unavailable")
+
     with logger.contextualize(request_id=req_id):
         conn = pool.getconn()
         cur = conn.cursor()
