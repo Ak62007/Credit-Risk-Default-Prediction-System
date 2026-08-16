@@ -1,6 +1,12 @@
 # Data
 /data/
 
+# Dashboard frontend (Next.js)
+dashboard/frontend/node_modules/
+dashboard/frontend/.next/
+dashboard/frontend/next-env.d.ts
+dashboard/frontend/.env.local
+
 # Mac OS-specific storage files
 .DS_Store
 

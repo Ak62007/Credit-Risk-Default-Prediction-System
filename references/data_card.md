@@ -1896,3 +1896,162 @@ Typer app, matching `dataset.py`/`features.py`'s existing CLI pattern).
   reasoning already on record elsewhere in this data card: drift
   detection needs no labels, retraining needs matured ones, and
   conflating the two ignores the ~24-month label-maturity lag.
+
+---
+
+## M20: Prediction logging + ops dashboard
+
+Built the serving-side half of the monitoring loop M19 designed for: every
+`/predict` request is now persisted to Postgres (`prediction_logs`), loaded
+back out via a loader that reuses M19's `build_drift_report()` unmodified,
+and surfaced through a separate React/FastAPI ops dashboard with a
+persisted drift-history table. (The original 23-milestone plan named this
+"prediction logging + Streamlit ops dashboard" — what actually shipped is
+a proper React/Next.js frontend backed by a dedicated FastAPI service, not
+Streamlit; documenting what was built, not the stale plan wording, same as
+M19's precedent.)
+
+### Design decisions
+
+**Schema mirrors `RequestModel`, plus what the request itself doesn't
+carry.** `prediction_logs` has one row per `/predict` call: `request_id`
+(UUID, unique), `logged_at`, `issue_d` (substituted at request time, not
+part of the API payload), all 66 raw input fields matching
+`credit_risk/api/schemas.py`'s `RequestModel` exactly, then `pred`,
+`prob`, and `reason_codes` (JSONB). Keeping the column set a direct mirror
+of the API contract means the loader can reconstruct exactly what the
+model saw, not an approximation of it.
+
+**Least-privilege roles, mirroring real production RBAC.** Three narrow
+Postgres roles instead of one shared credential: `prediction_logger`
+(INSERT-only on `prediction_logs`, used by the live API), `monitoring_reader`
+(SELECT-only on `prediction_logs` and later `drift_snapshots`, used by the
+loader and dashboard), `drift_writer` (INSERT-only on `drift_snapshots`,
+used only by the dashboard's background snapshot job — no access to
+`prediction_logs` or any MLflow tracking table on the shared RDS instance).
+No credential in this system can do more than the one thing it needs to.
+
+**Connection pooling with graceful degradation, not just a happy path.**
+`ThreadedConnectionPool(minconn=1, maxconn=5)` wraps the write path; a
+real bug surfaced during load testing where a failed connection was
+unconditionally recycled back into the pool (`finally: pool.putconn(conn)`),
+repeatedly handing a poisoned connection to the next caller — fixed with a
+`bad_conn` flag so failed connections are discarded (`close=True`) instead
+of reused. Pool creation itself is wrapped in `try/except` at module load,
+falling back to `pool = None` with a `RuntimeError` guard inside
+`log_predictions`, so a transient DB hiccup at startup degrades one
+endpoint's logging rather than crashing the whole API. Also needed a
+manual IPv4 `hostaddr` pre-resolution workaround for the RDS host, since
+letting libpq resolve DNS itself tried an unreachable IPv6/NAT64 path
+first (~85s vs ~8s to connect) — the same workaround was later reused
+verbatim in the dashboard backend's `config.py`.
+
+**The loader is the only new logic; drift computation itself is
+untouched.** `load_prediction_logs()` is the sole new function — it reads
+`prediction_logs`, adds a `target` placeholder column (`pd.NA`, since live
+predictions have no matured label yet, same 24-month lag reasoning as
+M19), and fixes two dtype issues (dates cast explicitly to datetime; the
+seven `mths_since_*` nullable numeric columns coerced via
+`pd.to_numeric(errors='coerce')`, since an all-`None` column read through
+a raw DBAPI2 connection silently comes back as `object` dtype holding
+Python `None` instead of `float64`/`NaN`, which breaks `pd.cut()`
+downstream). Everything after that — `build_drift_report()` itself — is
+the exact function M19 built, called with `target_label='live'` instead
+of `'val'`/`'test'`. This is the reusability M19's own data card section
+explicitly designed for.
+
+**Dashboard scoped as a separate service, not bolted onto serving.**
+Handed to Claude Code with a scoped prompt (explore the codebase itself,
+propose a plan before building, keep the live `/predict` path untouched,
+reuse existing data-loading/drift logic rather than reimplementing it).
+Delivered as `dashboard/backend/` (a second, read-only FastAPI app) and
+`dashboard/frontend/` (Next.js), reviewed via direct file reads and
+`git diff` before accepting — confirmed correct reuse of
+`load_prediction_logs()` and consistent adoption of the project's own
+conventions (the `hostaddr` workaround, the graceful-degradation pattern
+for optional config).
+
+### Finding 1: live-vs-train drift is mostly the same signal M19 already
+found, not new information
+
+With ~2,000 rows of demo traffic in `prediction_logs` (generated via
+Locust, replaying real rows sampled from `test_df`), the full 65-feature
+drift report (`train_df` as reference, live logs as target) flags
+`{'significant': 36, 'stable': 26, 'moderate': 3}`. That's close to M19's
+own test-vs-train baseline (`33` significant, `1` moderate, `31` stable,
+identical between the val and test comparisons) — expected, because the
+demo traffic generator (`locustfile.py`) draws its rows from `test_df`
+after `dropna(subset=REQUIRED_COLS)`, so a live-vs-train comparison here
+is substantially re-measuring the same 2016-vintage-vs-2007–2014-vintage
+drift M19 already characterized (the missingness-schema cluster,
+`credit_age_yrs`, and the other vintage-correlated fields), not detecting
+something new in production.
+
+The gap between the two counts (36 vs 33 significant, 3 vs 1 moderate) is
+the genuinely open part: whether that's fully explained by the `dropna`
+filter narrowing the live sample to a specific, non-representative slice
+of `test_df`, or whether ~2,000 rows is just too small to reproduce M19's
+counts exactly, hasn't been checked with a segmented comparison. Flagged
+here as an honest open question rather than resolved — the user
+explicitly chose not to investigate further before writing this section,
+so this is a hypothesis, not a finding.
+
+### Finding 2: the earlier hand-picked features (`dti`, `addr_state`) are
+real but not the standout story once all 65 are compared
+
+Before running the full report, `dti` (PSI `0.1132`, moderate) and
+`addr_state` (PSI `0.1145`, moderate, including the same `'ND'`
+unseen-category pattern as M19's Finding 3) were the two features
+initially noticed from a smaller demo run and treated as the interesting
+result. In the full comparison they're still flagged, but dwarfed by
+dozens of features at PSI well above 1.0 (`credit_age_yrs` at `3.90`,
+`initial_list_status` at `0.76`, most secondary credit-bureau fields
+above `1.1`). This is a live illustration of the exact "alert fatigue /
+which findings actually matter" tension M19's design decisions section
+anticipated — a human scanning raw output would have fixated on the
+wrong signal without the report's severity-sorted summary view.
+
+### Testing
+
+15 tests across `tests/test_prediction_logger.py` (8) and
+`tests/test_log_loader.py` (7), entirely mock-based — no test touches the
+real database. Covers: `RuntimeError` when the pool failed to initialize;
+the values-tuple length matching the SQL's `%s` placeholder count
+(regression test for a real bug this session, where a manually-reformatted
+`VALUES` block silently dropped two placeholders); correct value
+ordering; commit + `putconn(close=False)` on success; `putconn(close=True)`
+plus re-raise on failure (regression test for the connection-poisoning
+bug); the `target` placeholder column; date-column coercion; the all-`None`-
+column dtype fix (regression test); mixed-`None`/value column
+preservation; and connection closing on both the success and error paths.
+All passing.
+
+### Artifact
+
+Unlike M19's static `reports/drift/drift_report.csv`, M20's artifact is
+live rather than a point-in-time file: `drift_snapshots`
+(`scripts/sql/create_drift_snapshots_table.sql`), appended to on an
+interval by the dashboard backend's `drift_snapshot_job.py`, surfaced as
+a PSI trend line on the dashboard's Drift page. Kept on a separate write
+path from `prediction_logs` (its own `drift_writer` role, its own
+connection) rather than reusing `prediction_logger`'s credential. ~2,000
+rows of Locust-generated demo traffic sit in `prediction_logs` as of this
+writing.
+
+### Implications for downstream milestones
+
+- **M22 (retrospective):** Finding 1's open question (sampling-skew
+  hypothesis vs. genuine additional live drift) is a concrete candidate
+  for the kind of segmented analysis M10 did for `application_type` —
+  worth resolving properly rather than leaving as a hypothesis in the
+  final writeup.
+- **Dashboard's `MIN_LIVE_SAMPLE_SIZE=30` guard:** empirically justified
+  by this milestone, not just theoretical — an earlier 2-row sanity-check
+  run of the same drift report produced degenerate PSI values, which is
+  exactly the failure mode the guard exists to prevent.
+- **Future auto-retraining stretch milestone:** the live-vs-train
+  comparison here reinforces the same M19 stance — this detector still
+  isn't wired to trigger anything automatically, and Finding 1 is itself
+  an argument for why: a naive "PSI is high, retrain" rule would have
+  fired on inherited, already-understood drift rather than a genuine new
+  production signal.

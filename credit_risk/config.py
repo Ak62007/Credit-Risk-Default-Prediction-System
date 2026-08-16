@@ -6,6 +6,8 @@ from loguru import logger
 # Load environment variables from .env file if it exists
 load_dotenv()
 
+logger.configure(extra={"request_id": "-"})
+
 # Paths
 PROJ_ROOT = Path(__file__).resolve().parents[1]
 logger.info(f"PROJ_ROOT path is: {PROJ_ROOT}")
@@ -27,6 +29,10 @@ try:
     from tqdm import tqdm
 
     logger.remove(0)
-    logger.add(lambda msg: tqdm.write(msg, end=""), colorize=True)
+    logger.add(
+        lambda msg: tqdm.write(msg, end=""),
+        colorize=True,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | req_id={extra[request_id]} - <level>{message}</level>",
+    )
 except ModuleNotFoundError:
     pass
