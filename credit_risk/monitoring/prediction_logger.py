@@ -1,10 +1,11 @@
 import os
 import socket
-import psycopg2
+
 from loguru import logger
-from psycopg2.extras import Json
 from psycopg2.extensions import parse_dsn
+from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
+
 from credit_risk.api.schemas import RequestModel
 
 try:
