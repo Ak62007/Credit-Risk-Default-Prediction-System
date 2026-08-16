@@ -1,15 +1,8 @@
--- M20: prediction_logs table
--- One row per /predict request. Column set mirrors credit_risk/api/schemas.py's
--- RequestModel exactly (translated to Postgres types), plus request_id/logged_at/
--- issue_d/pred/prob/reason_codes, which aren't part of the API request itself.
-
 CREATE TABLE prediction_logs (
     -- identity / correlation
     id BIGSERIAL PRIMARY KEY,
     request_id UUID NOT NULL UNIQUE,
     logged_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-    -- substituted at request time, not part of RequestModel (needed by prep_one_split)
     issue_d DATE NOT NULL,
 
     -- RequestModel: required numeric fields
