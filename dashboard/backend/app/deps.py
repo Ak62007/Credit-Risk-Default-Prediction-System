@@ -1,6 +1,6 @@
 import pandas as pd
 
-from credit_risk.dataset import AFTER_EDA, load_splits
+from credit_risk.dataset import AFTER_EDA, TRAIN_FILENAME
 from credit_risk.monitoring.log_loader import load_prediction_logs
 
 from app import config
@@ -8,8 +8,10 @@ from app.services.cache import TTLCache
 
 
 def _load_reference_df() -> pd.DataFrame:
-    train_df, _val_df, _test_df, _metadata = load_splits(path=AFTER_EDA)
-    return train_df
+    # Only the train split is ever used as the drift-comparison reference.
+    # load_splits() would also load val/test just to discard them, wasting
+    # real memory on a resource-constrained deployment box (see M22 note).
+    return pd.read_parquet(AFTER_EDA / TRAIN_FILENAME)
 
 
 # Reference (training) data never changes at runtime -> cached for the process lifetime.
