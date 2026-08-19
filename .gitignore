@@ -216,3 +216,5 @@ models/
 mlflow.db
 mlartifacts/
 .claude/
+
+try-the-model/*.tar.gz
