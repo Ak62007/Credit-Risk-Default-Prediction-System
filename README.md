@@ -133,6 +133,18 @@ The dashboard (`dashboard/`) is a separate FastAPI + Next.js app that reads `pre
 
 ---
 
+## Live demo
+
+The full system is deployed on AWS, not just built and left local — the `/predict` API, the ops dashboard backend, and the dashboard frontend all run together on a single EC2 instance, fronted by nginx as a reverse proxy with path-based routing (`/` to the dashboard, `/api/` to the inference service, `/dashboard-api/` to the dashboard's backend) and Basic Auth. Every service is bound to `127.0.0.1` internally — nginx is the only thing actually reachable from the public internet, and it's the single point handling authentication for all three.
+
+It runs **on-demand rather than always-on**: spun up before a demo or interview and stopped immediately after, rather than left running continuously. This was a deliberate cost/complexity trade-off, not an oversight — an always-on hobby deployment accrues real AWS charges for no benefit when nobody's looking at it, and this project already tracks that kind of reasoning explicitly elsewhere (see the accepted-risk write-ups in `references/data_card.md`). Because of that, there isn't a permanent public link here.
+
+Getting everything running on a memory-constrained `t3.small` instance (2GB RAM) surfaced a few genuine engineering problems along the way — among them, the drift-monitoring feature initially OOM-killed the dashboard backend by loading the full 466k-row training set into memory just to compute PSI comparisons; the fix was switching to a representative 40k-row sample, which is closer to how real production drift monitors actually work (they rarely diff against a full historical dataset live) than a workaround. The full list of what broke and how it was diagnosed and fixed lives in [`references/deployment_runbook.md`](references/deployment_runbook.md), along with the exact start/stop sequence.
+
+Happy to spin it up for a live walkthrough on request.
+
+---
+
 ## Architecture
 
 High-level system flow, dataset build through live serving and monitoring:
