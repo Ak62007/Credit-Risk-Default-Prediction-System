@@ -1,6 +1,6 @@
 import pandas as pd
 
-from credit_risk.dataset import AFTER_EDA, TRAIN_FILENAME
+from credit_risk.dataset import AFTER_EDA
 from credit_risk.monitoring.log_loader import load_prediction_logs
 
 from app import config
@@ -9,9 +9,13 @@ from app.services.cache import TTLCache
 
 def _load_reference_df() -> pd.DataFrame:
     # Only the train split is ever used as the drift-comparison reference.
-    # load_splits() would also load val/test just to discard them, wasting
-    # real memory on a resource-constrained deployment box (see M22 note).
-    return pd.read_parquet(AFTER_EDA / TRAIN_FILENAME)
+    # Uses a 40k-row random sample of the full 466k-row training set, not
+    # the full set itself -- PSI's quantile-bucket comparisons don't need
+    # every historical row to be statistically stable, and the full set's
+    # ~839MB in-memory footprint was the main cause of repeated OOM kills
+    # on this deployment box's limited RAM (see M22 note). Regenerate via:
+    # df.sample(n=40000, random_state=42).to_parquet(...) on the full set.
+    return pd.read_parquet(AFTER_EDA / "training_reference_sample.parquet")
 
 
 # Reference (training) data never changes at runtime -> cached for the process lifetime.
