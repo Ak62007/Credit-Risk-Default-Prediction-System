@@ -7,6 +7,13 @@ dashboard/frontend/.next/
 dashboard/frontend/next-env.d.ts
 dashboard/frontend/.env.local
 
+# Try-the-model frontend (Next.js)
+try-the-model/node_modules/
+try-the-model/.next/
+try-the-model/next-env.d.ts
+try-the-model/.env.local
+try-the-model/tsconfig.tsbuildinfo
+
 # Mac OS-specific storage files
 .DS_Store
 
@@ -124,6 +131,12 @@ ipython_config.py
 #   commonly ignored for libraries.
 #   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
 #poetry.lock
+
+# The generic Python `lib/` rule above (from the cookiecutter-data-science template)
+# would otherwise also swallow these Next.js apps' own lib/ dirs. Must stay after
+# that rule — gitignore negations only win over patterns earlier in the file.
+!dashboard/frontend/lib/
+!try-the-model/lib/
 
 # pdm
 #   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
