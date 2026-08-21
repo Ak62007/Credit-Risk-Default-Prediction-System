@@ -2055,3 +2055,38 @@ writing.
   an argument for why: a naive "PSI is high, retrain" rule would have
   fired on inherited, already-understood drift rather than a genuine new
   production signal.
+
+---
+
+## Live deployment hardening: domain, HTTPS, systemd automation (2026-08-19 to 2026-08-21)
+
+Not one of the 23 numbered milestones — this is operational work layered on top of the already-complete system (M17's Dockerized `/predict` API, M20's dashboard), covered here because it surfaced several genuine engineering problems worth the same documentation treatment as any other milestone. Full operational detail (start/stop sequence, gotchas quick-reference) lives in `references/deployment_runbook.md`; this section covers the design reasoning and bugs.
+
+### Design decisions
+
+**systemd over tmux for the native services.** The dashboard backend, dashboard frontend, and a new public inference demo (`try-the-model/`) originally ran as manually-started foreground processes in tmux — meaning every instance stop/start required SSHing in and re-running three commands by hand (tmux sessions themselves don't survive a stop/start, only a plain reboot). Converted all three to systemd units (`dashboard-backend.service`, `dashboard-frontend.service`, `try-the-model.service`), matching how nginx and the `/predict` Docker container already auto-started. `Restart=on-failure` is a genuine improvement over the tmux setup, not just parity — a crash now self-heals instead of silently staying dead until someone notices. Verified end-to-end via an actual instance stop/start, not just by inspecting `systemctl status`.
+
+**One root domain, subdomains per project, not a domain per project.** Registered `adii.codes` (free 1 year via GitHub Student Developer Pack) rather than a project-specific domain, with `credit-risk.adii.codes` as this project's subdomain — subdomains are free under an owned domain, so future projects each get one without a new purchase, and the root domain can double as a personal portfolio hub linking out to each.
+
+**TLS termination at nginx, Let's Encrypt via Certbot.** Standard reverse-proxy pattern: the browser-to-nginx hop is encrypted, nginx-to-backend stays plain HTTP over loopback (never leaves the box, so this is fine). Amazon Linux 2023 has had Certbot in its own `dnf` repos since late 2023 — no pip/virtualenv install needed, contrary to older guides. Certificate expires 2026-11-19; a systemd timer (`certbot-renew.timer`) checks twice daily and auto-renews within 30 days of expiry, but only fires if the instance happens to be running at trigger time — given the on/off usage model, this is a bonus, not a guarantee, so the practical plan is a manual `certbot renew` safety check before anything important once the expiry date approaches.
+
+**Basic Auth removed project-wide, not just on the public demo.** The dashboard originally sat behind Basic Auth while `try-the-model` was deliberately public from the start. Reconsidered once framed as "how does an interviewer actually get to see this" — nothing behind the dashboard is sensitive (synthetic prediction logs plus the public LendingClub dataset), so the credential requirement was pure friction with no real security benefit for a portfolio piece. Removed `auth_basic` from every nginx location block; everything is now reachable with just a link.
+
+### Real bugs found and fixed (good interview material)
+
+**nginx/Next.js redirect loop.** `try-the-model` is served from a nginx sub-path via a `basePath` set in `next.config.ts`. Requesting the path without a trailing slash produced an infinite bounce: nginx's own `location /try-the-model/` block redirected the no-slash request to add a slash (`301`), while Next.js's `basePath` normalization redirected the with-slash version right back to drop it (`308`) — two layers with opposite opinions on the URL's canonical form, looping forever. Root-caused via nginx's access log (confirmed the `301` was generated internally, no proxy attempt logged) and by directly curling the suspected backend to rule it out. Fixed by adding `trailingSlash: true` to `try-the-model/next.config.ts`, aligning Next.js's canonical form with what nginx already redirected toward, rather than fully reverse-engineering nginx's exact internal reasoning. Lesson: when two layers can each rewrite a URL toward opposite canonical forms, align them rather than assuming one side is simply "buggy."
+
+**Mixed-content HTTPS bug.** After adding TLS, the dashboard's Overview/Traffic/Score-distribution panels silently failed with "Failed to fetch." Root cause: `NEXT_PUBLIC_API_BASE_URL` is a build-time-baked value (Next.js inlines all `NEXT_PUBLIC_*` env vars directly into the compiled JavaScript, not read fresh at runtime), and the dashboard frontend had been built pointing at the old plain-`http://` IP address. Once the page itself loaded over `https://`, browsers correctly blocked the insecure `http://` fetch as active mixed content — confirmed directly via the browser console's explicit "Mixed Content" error naming the blocked request, rather than guessing from the symptom alone. Fixed by rebuilding with the corrected `https://` domain-based URL and redeploying.
+
+**systemd unit files don't expand `~`.** `which uv` returned `~/.local/bin/uv` with the tilde still present — harmless in an interactive shell (which expands `~` itself) but silently wrong inside a systemd unit's `ExecStart`, since `~` expansion is a shell feature systemd doesn't perform. Caught before it caused a failure by verifying the resolved path was a real absolute path before writing it into any unit file, rather than assuming `which`'s output was already usable as-is.
+
+**Dashboard sidebar not responsive on mobile.** `Sidebar.tsx` used a fixed `w-60` (240px) width with no responsive breakpoints, so on a narrow phone viewport it consumed more than half the screen, squeezing the main content into a column so narrow that text wrapped one word per line. Scoped to Claude Code as a small, well-defined fix (hide the sidebar behind a hamburger/drawer below the `md` breakpoint, leave desktop layout untouched) rather than a broader redesign.
+
+### Testing / verification
+
+Every fix in this section was verified empirically before being considered done, not assumed correct from the change alone: the redirect-loop fix via `curl -IL` showing a single clean `301 → 200` hop; the mixed-content fix via reloading the dashboard and confirming the panels actually populated; the systemd migration via a genuine EC2 stop/start cycle with zero manual commands afterward; and the auth removal via curling all four paths with no credentials and confirming real `200`/`405` responses (not `401`).
+
+### Implications for downstream milestones
+
+- **M22 (retrospective):** this section is a strong candidate for direct inclusion or heavy reference — it's a concentrated set of real production bugs (URL-canonicalization mismatches, build-time-vs-runtime config, mixed content, systemd path-expansion) that were diagnosed empirically rather than guessed at, which is exactly the kind of material an honest retrospective should highlight.
+- **Portfolio framing:** the live demo is now a stronger artifact than "a model behind an API" — a real custom domain, real TLS, and a fully self-healing deployment (systemd auto-restart, auto-start on boot) are concrete, checkable claims for a resume/interview conversation, not just descriptions.
